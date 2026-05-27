@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.3'
+APP_VERSION  = '3.4'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -723,7 +723,21 @@ class App(tk.Tk):
         self.title("verificador de pre ordenes")
         self.geometry('1280x760'); self.minsize(1050,620)
         self.configure(bg=FONDO); self.resizable(True,True)
-        self.overrideredirect(True)
+        
+        self.update_idletasks()
+        if os.name == 'nt':
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                style = ctypes.windll.user32.GetWindowLongW(hwnd, -16) # GWL_STYLE = -16
+                style &= ~0x00C00000 # WS_CAPTION = 0x00C00000 (Strips title bar)
+                ctypes.windll.user32.SetWindowLongW(hwnd, -16, style)
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027) # SWP_FRAMECHANGED
+            except Exception:
+                self.overrideredirect(True)
+        else:
+            self.overrideredirect(True)
+            
         self.attributes('-alpha', 0.98)
 
         # Icono de la ventana
@@ -779,9 +793,12 @@ class App(tk.Tk):
         threading.Thread(target=self._check_updates_bg, daemon=True).start()
 
     def minimize_window(self):
-        self.overrideredirect(False)
-        self.iconify()
-        self.bind("<Map>", self.on_map)
+        if os.name == 'nt':
+            self.iconify()
+        else:
+            self.overrideredirect(False)
+            self.iconify()
+            self.bind("<Map>", self.on_map)
 
     def on_map(self, event=None):
         self.overrideredirect(True)

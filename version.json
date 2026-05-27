@@ -1,5 +1,5 @@
 {
-  "version": "3.3",
-  "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/download/v3.3/CotejoPedidos.exe",
-  "notes": "Versión inicial publicada."
+  "version": "3.4",
+  "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/latest/download/VerificadorPreordenes.exe",
+  "notes": "✨ Novedades de la v3.4:\n- ⚡ Integración nativa en la barra de tareas de Windows.\n- 🔄 Corrección del proceso de minimización y restauración fluida.\n- 🏢 Tooltip simplificado en minúsculas: 'verificador de pre ordenes'.\n- 🚫 Soporte completo de pantalla completa (maximizar y restaurar nativo)."
 }
