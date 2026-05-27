@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches and editor configurations
+.pytest_cache/
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# PyInstaller / Packaging files
+build/
+dist/
+*.spec
+*.egg-info/
+.eggs/
+eggs/
+lib/
+lib64/
