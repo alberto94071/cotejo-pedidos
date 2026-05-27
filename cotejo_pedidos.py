@@ -1,0 +1,1207 @@
+# ============================================================
+#  VERIFICADOR DE PRE-ÓRDENES  v3.3  -  CHRONOS-DEV
+#  Autor  : Rony — CHRONOS-DEV  |  rony@chronos-dev.com
+#  Versión: 3.3
+#  Inst.  : IGSS — Consultorio del Instituto en San Marcos
+# ============================================================
+
+import sys, tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import threading, re, os, pandas as pd
+from datetime import datetime
+from collections import defaultdict
+from PIL import Image, ImageTk
+import numpy as np
+import urllib.request, json, webbrowser
+
+# ── Soporte para recursos empaquetados con PyInstaller (_MEIPASS) ──
+def obtener_ruta_recurso(relative_path):
+    """Retorna la ruta absoluta del recurso, buscando en _MEIPASS para PyInstaller."""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+# ── Configurar AppUserModelID para Windows (Agrupación de Barra de Tareas) ──
+if os.name == 'nt':
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("chronosdev.verificadorpreordenes.igss.v3.3")
+    except Exception:
+        pass
+
+# ── Metadatos de la aplicación ─────────────────────────────
+APP_VERSION  = '3.3'
+APP_AUTHOR   = 'CHRONOS-DEV'
+APP_CONTACT  = 'www.chronos-dev.com'
+APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
+
+# ── Auto-updater — GitHub ───────────────────────────────────
+#  Repositorio donde vive version.json y los releases.
+#  Cambia el nombre del repo si lo llamás diferente en GitHub.
+GITHUB_USER = 'alberto94071'
+GITHUB_REPO = 'cotejo-pedidos'
+VERSION_URL = (
+    f'https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main/version.json'
+)
+
+def check_for_updates():
+    """Consulta GitHub en background y retorna (latest_version, download_url) o (None, None)."""
+    try:
+        req = urllib.request.Request(VERSION_URL, headers={'User-Agent': 'CotejoPedidos'})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            data = json.loads(r.read().decode('utf-8'))
+        latest  = data.get('version', '')
+        dl_url  = data.get('download_url', '')
+        notes   = data.get('notes', '')
+        if latest and latest != APP_VERSION:
+            return latest, dl_url, notes
+    except Exception:
+        pass
+    return None, None, None
+
+# ── SubProductos que NUNCA se pueden usar en este tipo de compra ──
+SUBPRODUCTOS_PROHIBIDOS = {'001-019-0005', '001-004-0007'}
+
+pdf2image = pytesseract = None
+
+def _load_ocr_libs():
+    global pdf2image, pytesseract
+    import pdf2image as _p; import pytesseract as _t
+    pdf2image = _p; pytesseract = _t
+    if os.name == 'nt':
+        for ruta in [
+            r'C:\Users\elvis.rodriguez\AppData\Local\Programs\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+            os.path.join(os.path.dirname(__file__), 'tesseract', 'tesseract.exe'),
+        ]:
+            if os.path.exists(ruta):
+                pytesseract.pytesseract.tesseract_cmd = ruta; break
+
+# ════════════════════════════════════════════════════════════
+#  LOGO IGSS
+# ════════════════════════════════════════════════════════════
+
+def _make_igss_logo():
+    candidates = [
+        obtener_ruta_recurso('igss_logo.png'),
+        obtener_ruta_recurso('igss_azul-removebg-preview.png'),
+    ]
+    path = next((p for p in candidates if os.path.exists(p)), None)
+    if path is None: return None
+    try:
+        img  = Image.open(path).convert('RGBA')
+        arr  = np.array(img).astype(float)
+        norm = np.clip((arr[:,:,0]+arr[:,:,1]+arr[:,:,2]) / (3*255.0), 0, 1)
+        out  = np.zeros_like(arr)
+        out[:,:,0] = int(0x7a) * norm
+        out[:,:,1] = int(0xff) * norm
+        out[:,:,2] = int(0x00) * norm
+        out[:,:,3] = (norm * 180).astype(np.uint8)
+        return Image.fromarray(out.astype(np.uint8), 'RGBA')
+    except Exception:
+        return None
+
+# ════════════════════════════════════════════════════════════
+#  PARSERS
+# ════════════════════════════════════════════════════════════
+
+def parse_pdf(pdf_path, progress_cb=None):
+    _load_ocr_libs()
+    poppler_kwargs = {}
+    if os.name == 'nt':
+        local = os.path.join(os.path.dirname(__file__), 'poppler', 'bin')
+        if os.path.exists(local):
+            poppler_kwargs['poppler_path'] = local
+        else:
+            for p in [
+                r'C:\Users\elvis.rodriguez\AppData\Local\Microsoft\WinGet\Packages\oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe\poppler-25.07.0\Library\bin',
+                r'C:\Program Files\poppler\bin', r'C:\poppler\bin',
+            ]:
+                if os.path.exists(p): poppler_kwargs['poppler_path'] = p; break
+    try:
+        pages = pdf2image.convert_from_path(pdf_path, dpi=300, **poppler_kwargs)
+    except Exception as e:
+        msg = str(e)
+        if any(k in msg.lower() for k in ['pdfinfo','poppler','executable']):
+            raise RuntimeError("No se encontró Poppler.\nColoca la carpeta 'poppler' junto a este script.\n\n" + msg)
+        raise
+
+    total = len(pages); rows = []; correlativo = unidad_id = None
+    row_pat  = re.compile(r'(\d{6})\s+.+?\s+(\d{3}-\d{3}-\d{4})\s+([\d,\.]+)\s*$')
+    corr_pat = re.compile(r'Correlativo\s+No\.?\s+(\d+/\d+)', re.IGNORECASE)
+    uid_pat  = re.compile(r'CENTRO DE COSTO:\s*(\d+)', re.IGNORECASE)
+
+    for idx, page in enumerate(pages, 1):
+        if progress_cb: progress_cb(f"Leyendo PDF — página {idx}/{total}…")
+        try:
+            text = pytesseract.image_to_string(page, lang='spa', config='--psm 6')
+        except Exception as e:
+            msg = str(e)
+            if any(k in msg.lower() for k in ['tesseract','path','not installed']):
+                raise RuntimeError("Tesseract no encontrado.\nhttps://github.com/UB-Mannheim/tesseract/wiki\n\n" + msg)
+            raise
+        if not correlativo:
+            m = corr_pat.search(text)
+            if m: correlativo = m.group(1).strip()
+        if not unidad_id:
+            m = uid_pat.search(text)
+            if m: unidad_id = m.group(1).strip()
+        for line in text.split('\n'):
+            m = row_pat.search(line.strip())
+            if m:
+                try: rows.append({'codigo': m.group(1), 'subproducto': m.group(2),
+                                   'cantidad': float(m.group(3).replace(',','.'))})
+                except: pass
+    return {'correlativo': correlativo, 'unidad_id': unidad_id, 'rows': rows}
+
+
+def parse_consolidacion(xls_path):
+    with open(xls_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    data_vals = re.findall(r'<(?:ss:)?Data[^>]*>([^<]+)</(?:ss:)?Data>', content)
+    num = data_vals[1].strip(); headers = data_vals[2:13]
+    flat = data_vals[13:]; cols = 11; rows = []; preordenes = set()
+    for i in range(0, len(flat), cols):
+        row = flat[i:i+cols]
+        if len(row) < cols: break
+        r = dict(zip(headers, [v.strip() for v in row]))
+        if r.get('Pre orden','').startswith('Totales'): break
+        try:
+            rows.append({'preorden': r.get('Pre orden',''),
+                         'cod_insumo': r.get('Cod. Insumo','').strip(),
+                         'subproducto': r.get('SubProducto','').strip(),
+                         'cant': float(r.get('Cantidad solicitada','0').replace(',','.'))})
+            preordenes.add(r.get('Pre orden',''))
+        except: pass
+    idx_ppr  = {(r['cod_insumo'], r['subproducto']): r['cant'] for r in rows}
+    ppr_subs = defaultdict(list)
+    for r in rows: ppr_subs[r['cod_insumo']].append(r['subproducto'])
+    preorden = next(iter(preordenes),'N/A') if len(preordenes)==1 else ', '.join(preordenes)
+    return {'num': num, 'preorden': preorden, 'idx_ppr': idx_ppr, 'ppr_subs': dict(ppr_subs), 'rows': rows}
+
+
+def extract_year_from_series(series):
+    """Extrae de forma robusta el año de 4 dígitos de una serie de fechas de pandas (soporta datetime y strings)."""
+    def get_year_val(x):
+        if pd.isna(x):
+            return None
+        if hasattr(x, 'year'):
+            return str(x.year)
+        s = str(x).strip()
+        m = re.search(r'\b(20\d{2})\b', s)
+        if m:
+            return m.group(1)
+        return None
+    return series.apply(get_year_val)
+
+
+def generar_pdf_data_desde_excel(excel_path, uid, corr_num, corr_year):
+    df = pd.read_excel(excel_path, header=3)
+    df.columns = df.columns.str.strip()
+    
+    try:
+        num_float = float(corr_num)
+        filtrado = df[(df['ID Unidad'].astype(str).str.strip() == uid) & (df['Número'] == num_float)].copy()
+    except:
+        filtrado = df[(df['ID Unidad'].astype(str).str.strip() == uid) & (df['Número'].astype(str).str.strip() == corr_num)].copy()
+        
+    if corr_year and 'Fecha' in filtrado.columns:
+        anios_excel = extract_year_from_series(filtrado['Fecha'])
+        filtrado = filtrado[anios_excel == corr_year].copy()
+        
+    if filtrado.empty:
+        raise ValueError(f"No se encontraron registros en el Excel para Unidad ID: {uid}, Correlativo: {corr_num} y Año: {corr_year}.")
+        
+    rows = []
+    for _, r in filtrado.iterrows():
+        try:
+            rows.append({
+                'codigo': str(r['Código Interno']).strip(),
+                'subproducto': str(r['Subproductos']).strip(),
+                'cantidad': float(r['Cantidad Total'])
+            })
+        except:
+            pass
+            
+    return {
+        'correlativo': f"{corr_num}/{corr_year}",
+        'unidad_id': uid,
+        'rows': rows
+    }
+
+
+def _find_ppr_col(columns):
+    for col in columns:
+        if 'ppr' in str(col).lower(): return col
+    return None
+
+# ════════════════════════════════════════════════════════════
+#  COTEJO TRIPLE
+# ════════════════════════════════════════════════════════════
+
+def cotejar_triple(excel_path, pdf_data, consol_data):
+    corr_num = pdf_data['correlativo'].split('/')[0] if pdf_data['correlativo'] else None
+    corr_year = pdf_data['correlativo'].split('/')[1] if pdf_data['correlativo'] and '/' in pdf_data['correlativo'] else None
+    uid      = pdf_data['unidad_id']
+    df = pd.read_excel(excel_path, header=3)
+    df.columns = df.columns.str.strip()
+    df['ID Unidad']      = df['ID Unidad'].astype(str).str.strip()
+    df['Número']         = pd.to_numeric(df['Número'], errors='coerce')
+    df['Código Interno'] = df['Código Interno'].astype(str).str.strip()
+    df['Subproductos']   = df['Subproductos'].astype(str).str.strip()
+    if uid is None or corr_num is None:
+        raise ValueError("No se pudo extraer Unidad ID o Correlativo del PDF.")
+
+    # Deduplicar las filas del pedido por (codigo, subproducto) para evitar redundancias
+    seen_rows = set()
+    dedup_rows = []
+    for r in pdf_data['rows']:
+        row_key = (r['codigo'], r['subproducto'])
+        if row_key not in seen_rows:
+            dedup_rows.append(r)
+            seen_rows.add(row_key)
+    pdf_data['rows'] = dedup_rows
+
+    filtrado = df[(df['ID Unidad']==uid) & (df['Número']==float(corr_num))].copy()
+    if corr_year and 'Fecha' in filtrado.columns:
+        anios_excel = extract_year_from_series(filtrado['Fecha'])
+        filtrado = filtrado[anios_excel == corr_year].copy()
+        
+    if filtrado.empty:
+        raise ValueError(f"No hay filas en Excel para\nUnidad: {uid}  |  Correlativo: {pdf_data['correlativo']}")
+
+    ppr_col   = _find_ppr_col(df.columns.tolist())
+    tiene_ppr = ppr_col is not None
+    ppr_warning = None if tiene_ppr else (
+        "⚠️  El Excel NO tiene columna 'Código PPR'.\n"
+        "La comparación con Pre orden no será precisa.\n"
+        "Usa el reporte completo del sistema.")
+    if tiene_ppr: filtrado[ppr_col] = filtrado[ppr_col].astype(str).str.strip()
+
+    excel_idx = {}
+    for _, row in filtrado.iterrows():
+        key = (str(row['Código Interno']), str(row['Subproductos']))
+        ppr = str(row[ppr_col]).strip() if tiene_ppr else None
+        excel_idx[key] = {'cant': float(row['Cantidad Total']), 'ppr': ppr}
+
+    idx_ppr  = consol_data['idx_ppr']  if consol_data else {}
+    ppr_subs = consol_data['ppr_subs'] if consol_data else {}
+
+    # Pre-calcular la suma de Cantidad PDF agrupada por (PPR, subproducto)
+    sum_pdf_by_ppr_sub = defaultdict(float)
+    vistos_para_suma = set()  # Para evitar sumas duplicadas de filas con el mismo Código Interno
+    for fila in pdf_data['rows']:
+        key_excel = (fila['codigo'], fila['subproducto'])
+        excel_entry = excel_idx.get(key_excel)
+        ppr_code = excel_entry['ppr'] if excel_entry else None
+        if ppr_code and ppr_code not in ('None', ''):
+            sum_key = (fila['codigo'], fila['subproducto'])
+            if sum_key not in vistos_para_suma:
+                sum_pdf_by_ppr_sub[(ppr_code, fila['subproducto'])] += fila['cantidad']
+                vistos_para_suma.add(sum_key)
+
+    resultados = []; claves_excel_vistas = set()
+    sub_incorrectos = []; sub_prohibidos = []
+
+    for fila in pdf_data['rows']:
+        key_excel = (fila['codigo'], fila['subproducto'])
+        cant_pdf  = fila['cantidad']; claves_excel_vistas.add(key_excel)
+        excel_entry = excel_idx.get(key_excel)
+        cant_excel  = excel_entry['cant'] if excel_entry else None
+        ppr_code    = excel_entry['ppr']  if excel_entry else None
+        cant_consol = None; sub_en_consol = None; estado = None
+
+        # ── Verificar subproducto prohibido primero ──
+        if fila['subproducto'] in SUBPRODUCTOS_PROHIBIDOS:
+            estado = 'SUB_PROHIBIDO'
+            sub_prohibidos.append({
+                'origen':      'PDF / Pedido',
+                'codigo':      fila['codigo'],
+                'ppr':         ppr_code or '—',
+                'subproducto': fila['subproducto'],
+                'cant_pdf':    cant_pdf,
+            })
+
+        if estado is None and consol_data and ppr_code and ppr_code not in ('None',''):
+            cant_consol = idx_ppr.get((ppr_code, fila['subproducto']))
+            if cant_consol is None:
+                subs = ppr_subs.get(ppr_code, [])
+                if subs:
+                    sub_en_consol = ', '.join(subs)
+                    # Verificar si alguno de los subproductos en Consolidación está prohibido
+                    proh_en_consol = [s for s in subs if s in SUBPRODUCTOS_PROHIBIDOS]
+                    if proh_en_consol:
+                        estado = 'SUB_PROHIBIDO'
+                        for sp_proh in proh_en_consol:
+                            sub_prohibidos.append({
+                                'origen':      'Pre orden',
+                                'codigo':      fila['codigo'],
+                                'ppr':         ppr_code or '—',
+                                'subproducto': sp_proh,
+                                'cant_pdf':    cant_pdf,
+                            })
+                    else:
+                        estado = 'SUB_INCORRECTO'
+                        sub_incorrectos.append({'codigo': fila['codigo'], 'ppr': ppr_code,
+                                                'sub_pedido': fila['subproducto'],
+                                                'sub_consol': sub_en_consol, 'cant_pdf': cant_pdf})
+            else:
+                # Verificar si la cantidad consol tiene subproducto prohibido
+                if fila['subproducto'] in SUBPRODUCTOS_PROHIBIDOS and estado != 'SUB_PROHIBIDO':
+                    estado = 'SUB_PROHIBIDO'
+
+        if estado is None:
+            # Si hay un PPR válido, comparamos con la suma de las cantidades del PDF que comparten mismo PPR y subproducto
+            has_ppr = ppr_code and ppr_code not in ('None', '')
+            sum_pdf = sum_pdf_by_ppr_sub.get((ppr_code, fila['subproducto']), cant_pdf) if has_ppr else cant_pdf
+            
+            ok_e = cant_excel is not None and cant_excel == cant_pdf
+            ok_c = cant_consol is None or cant_consol == sum_pdf
+
+            if cant_excel is None:
+                estado = 'FALTANTE_EXCEL'
+            elif not ok_e and not ok_c:
+                estado = 'DIFERENCIA_AMBOS'
+            elif not ok_e:
+                estado = 'DIFERENCIA_EXCEL'
+            elif not ok_c:
+                estado = 'DIFERENCIA_CONSOL_MAYOR' if cant_consol > sum_pdf else 'DIFERENCIA_CONSOL_MENOR'
+            else:
+                estado = 'OK'
+
+        resultados.append({'codigo': fila['codigo'], 'ppr': ppr_code or '—',
+                           'subproducto': fila['subproducto'], 'cant_pdf': cant_pdf,
+                           'cant_excel': cant_excel, 'cant_consol': cant_consol,
+                           'sub_en_consol': sub_en_consol, 'estado': estado})
+
+    # Sobrantes Excel — también verificar prohibidos
+    for key, entry in excel_idx.items():
+        if key not in claves_excel_vistas:
+            ppr_code = entry['ppr']
+            cant_consol = idx_ppr.get((ppr_code, key[1])) if consol_data and ppr_code and ppr_code not in ('None','') else None
+            est = 'SOBRANTE_EXCEL'
+            if key[1] in SUBPRODUCTOS_PROHIBIDOS:
+                est = 'SUB_PROHIBIDO'
+                sub_prohibidos.append({'origen': 'Excel', 'codigo': key[0], 'ppr': ppr_code or '—',
+                                       'subproducto': key[1], 'cant_pdf': None})
+            resultados.append({'codigo': key[0], 'ppr': ppr_code or '—', 'subproducto': key[1],
+                               'cant_pdf': None, 'cant_excel': entry['cant'], 'cant_consol': cant_consol,
+                               'sub_en_consol': None, 'estado': est})
+
+    # Verificar prohibidos en Consolidación
+    if consol_data:
+        for row in consol_data['rows']:
+            if row['subproducto'] in SUBPRODUCTOS_PROHIBIDOS:
+                # Solo agregar si no fue ya detectado para este mismo PPR e insumo
+                ya = any(sp['ppr'] == row['cod_insumo'] and sp['subproducto'] == row['subproducto'] for sp in sub_prohibidos)
+                if not ya:
+                    sub_prohibidos.append({'origen': 'Pre orden', 'codigo': '—',
+                                           'ppr': row['cod_insumo'], 'subproducto': row['subproducto'],
+                                           'cant_pdf': row['cant']})
+
+    return resultados, uid, pdf_data['correlativo'], ppr_warning, sub_incorrectos, sub_prohibidos
+
+# ════════════════════════════════════════════════════════════
+#  EXPORTAR
+# ════════════════════════════════════════════════════════════
+
+ESTADO_LABELS = {
+    'OK':                       '✅ Correcto',
+    'DIFERENCIA_EXCEL':         '❌ Diferencia vs Excel',
+    'DIFERENCIA_CONSOL_MAYOR':  '⚠️ Pre orden MAYOR que pedido',
+    'DIFERENCIA_CONSOL_MENOR':  '❌ Pre orden MENOR que pedido',
+    'DIFERENCIA_AMBOS':         '❌ Diferencia en ambos',
+    'FALTANTE_EXCEL':           '❌ No encontrado en Excel',
+    'SOBRANTE_EXCEL':           '⚠️ Sobrante en Excel (no está en PDF)',
+    'SUB_INCORRECTO':           '❌ SubProducto incorrecto en Pre orden',
+    'SUB_PROHIBIDO':            '🚫 SUBPRODUCTO NO PERMITIDO para este tipo de compra',
+}
+
+def exportar_reporte(resultados, unidad_id, correlativo,
+                     consol_data=None, sub_incorrectos=None, sub_prohibidos=None, outpath=None):
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+
+    rows_exp = [{'Código Interno': r['codigo'], 'Código PPR': r['ppr'],
+                 'Subproducto': r['subproducto'], 'Cantidad PDF': r['cant_pdf'],
+                 'Cantidad Excel': r['cant_excel'], 'Cantidad Pre Orden': r['cant_consol'],
+                 'Estado': ESTADO_LABELS.get(r['estado'], r['estado'])} for r in resultados]
+
+    df_out  = pd.DataFrame(rows_exp)
+    if not outpath:
+        ts      = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fname   = f"Cotejo_{unidad_id}_{correlativo.replace('/','_')}_{ts}.xlsx"
+        desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
+        outpath = os.path.join(desktop if os.path.isdir(desktop) else os.path.expanduser('~'), fname)
+
+    with pd.ExcelWriter(outpath, engine='openpyxl') as writer:
+        df_out.to_excel(writer, index=False, sheet_name='Cotejo', startrow=5)
+        ws = writer.sheets['Cotejo']
+        thin   = Side(style='thin'); border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        verde  = PatternFill('solid', fgColor='C6EFCE')
+        rojo   = PatternFill('solid', fgColor='FFC7CE')
+        amari  = PatternFill('solid', fgColor='FFEB9C')
+        gris   = PatternFill('solid', fgColor='D9D9D9')
+        rojo_f = PatternFill('solid', fgColor='FF0000')   # rojo fuerte = prohibido
+
+        ws['A1'] = 'REPORTE DE VERIFICACIÓN DE PRE-ÓRDENES'; ws['A1'].font = Font(bold=True, size=14)
+        ws['A2'] = f'Unidad ID: {unidad_id}'
+        ws['A3'] = f'Correlativo pedido: {correlativo}'
+        if consol_data: ws['A4'] = f'Pre orden: {consol_data["num"]}   |   Pre-Orden: {consol_data["preorden"]}'
+        ws['A5'] = f'Generado: {datetime.now().strftime("%d/%m/%Y %H:%M")}   |   v{APP_VERSION}'
+
+        for cell in ws[6]:
+            cell.fill=gris; cell.font=Font(bold=True)
+            cell.alignment=Alignment(horizontal='center'); cell.border=border
+
+        for row in ws.iter_rows(min_row=7, max_row=ws.max_row):
+            val = str(row[6].value or '')
+            if   'NO PERMITIDO' in val:    fill = rojo_f
+            elif '✅' in val:              fill = verde
+            elif 'SubProducto' in val:     fill = rojo
+            elif 'MENOR' in val:           fill = rojo
+            elif 'MAYOR' in val:           fill = amari
+            elif '❌' in val:              fill = rojo
+            elif '⚠️' in val:             fill = amari
+            else:                           fill = PatternFill()
+            for cell in row:
+                cell.fill=fill; cell.border=border
+                cell.alignment=Alignment(vertical='center', wrap_text=True)
+
+        for col, w in zip('ABCDEFG', [12,12,18,14,14,15,52]):
+            ws.column_dimensions[col].width = w
+
+        # Resumen
+        total=len(resultados); ok_c=sum(1 for r in resultados if r['estado']=='OK'); err=total-ok_c
+        last=ws.max_row+2
+        ws.cell(last,1,'RESUMEN GENERAL').font=Font(bold=True,size=12)
+        ws.cell(last+1,1,'Total líneas PDF:'); ws.cell(last+1,2,total)
+        ws.cell(last+2,1,'Correctas (✅):').font=Font(color='375623',bold=True); ws.cell(last+2,2,ok_c)
+        ws.cell(last+3,1,'Con errores:').font=Font(color='9C0006',bold=True); ws.cell(last+3,2,err)
+
+        # ── Sección SubProductos PROHIBIDOS ──
+        if sub_prohibidos:
+            sec=ws.max_row+3
+            t=ws.cell(sec,1,'🚫  SUBPRODUCTOS NO PERMITIDOS PARA ESTE TIPO DE COMPRA  🚫')
+            t.font=Font(bold=True,size=12,color='FFFFFF')
+            t.fill=PatternFill('solid',fgColor='CC0000')
+            ws.merge_cells(start_row=sec,start_column=1,end_row=sec,end_column=6)
+            t.alignment=Alignment(horizontal='center')
+            n2=ws.cell(sec+1,1,
+                f'Los SubProductos {", ".join(SUBPRODUCTOS_PROHIBIDOS)} NO están autorizados '
+                f'para este tipo de compra. Deben eliminarse o corregirse en el sistema.')
+            n2.font=Font(italic=True,size=10,color='CC0000')
+            ws.merge_cells(start_row=sec+1,start_column=1,end_row=sec+1,end_column=6)
+            n2.alignment=Alignment(wrap_text=True); ws.row_dimensions[sec+1].height=30
+            enc_r2=sec+2
+            for ci,enc in enumerate(['Origen','Código Interno','Código PPR','SubProducto PROHIBIDO','Cantidad','Acción requerida'],1):
+                c=ws.cell(enc_r2,ci,enc)
+                c.fill=PatternFill('solid',fgColor='CC0000'); c.font=Font(bold=True,color='FFFFFF')
+                c.alignment=Alignment(horizontal='center'); c.border=border
+            for i,sp in enumerate(sub_prohibidos,1):
+                fr=enc_r2+i
+                for ci,v in enumerate([sp['origen'],sp['codigo'],sp['ppr'],
+                                        sp['subproducto'],sp.get('cant_pdf','—'),
+                                        'ELIMINAR — SubProducto no autorizado'],1):
+                    c=ws.cell(fr,ci,v)
+                    c.fill=PatternFill('solid',fgColor='FFCCCC')
+                    c.font=Font(color='CC0000',bold=True); c.border=border
+                    c.alignment=Alignment(vertical='center')
+
+        # ── Sección SubProductos incorrectos ──
+        if sub_incorrectos:
+            sec=ws.max_row+3
+            t=ws.cell(sec,1,'⚠️  SUBPRODUCTOS INCORRECTOS EN PRE ORDEN  ⚠️')
+            t.font=Font(bold=True,size=12,color='9C0006'); t.fill=PatternFill('solid',fgColor='FFD700')
+            ws.merge_cells(start_row=sec,start_column=1,end_row=sec,end_column=6)
+            t.alignment=Alignment(horizontal='center')
+            n=ws.cell(sec+1,1,'Los siguientes códigos tienen SubProducto diferente en la Pre orden respecto al Pedido. Deben ser corregidos por el Centro de Costo.')
+            n.font=Font(italic=True,size=10,color='9C0006')
+            ws.merge_cells(start_row=sec+1,start_column=1,end_row=sec+1,end_column=6)
+            n.alignment=Alignment(wrap_text=True); ws.row_dimensions[sec+1].height=30
+            enc_r=sec+2
+            for ci,enc in enumerate(['Código Interno','Código PPR','SubProducto en Pedido','SubProducto en Pre orden','Cantidad','Acción requerida'],1):
+                c=ws.cell(enc_r,ci,enc); c.fill=PatternFill('solid',fgColor='9C0006')
+                c.font=Font(bold=True,color='FFFFFF'); c.alignment=Alignment(horizontal='center'); c.border=border
+            for i,si in enumerate(sub_incorrectos,1):
+                fr=enc_r+i
+                for ci,v in enumerate([si['codigo'],si['ppr'],si['sub_pedido'],si['sub_consol'],si['cant_pdf'],'Verificar y corregir SubProducto en sistema'],1):
+                    c=ws.cell(fr,ci,v); c.fill=PatternFill('solid',fgColor='FFD700')
+                    c.border=border; c.alignment=Alignment(vertical='center')
+    return outpath
+
+# ════════════════════════════════════════════════════════════
+#  NOTIFICACIÓN FLOTANTE
+# ════════════════════════════════════════════════════════════
+
+def mostrar_toast(parent, mensaje, duracion_ms=3500):
+    toast = tk.Toplevel(parent)
+    toast.overrideredirect(True)
+    toast.attributes('-topmost', True)
+    toast.attributes('-alpha', 0.92)
+    toast.configure(bg='#1a251a')
+    frame = tk.Frame(toast, bg='#1a251a', highlightbackground='#7aff00',
+                     highlightthickness=2, padx=24, pady=14)
+    frame.pack()
+    tk.Label(frame, text='⚡', font=('Segoe UI', 20), bg='#1a251a', fg='#7aff00').pack(side='left', padx=(0,12))
+    tk.Label(frame, text=mensaje, font=('Consolas', 11, 'bold'),
+             bg='#1a251a', fg='#f0f0e8', wraplength=320).pack(side='left')
+    toast.update_idletasks()
+    parent.update_idletasks()
+    tw = toast.winfo_reqwidth(); th = toast.winfo_reqheight()
+    px = parent.winfo_rootx(); py = parent.winfo_rooty()
+    ph = parent.winfo_height()
+    x = px + 20; y = py + ph - th - 20
+    toast.geometry(f'+{x}+{y}')
+    def fade_out(alpha=0.92):
+        if alpha <= 0.05: toast.destroy(); return
+        toast.attributes('-alpha', alpha)
+        toast.after(40, fade_out, alpha - 0.06)
+    toast.after(duracion_ms, fade_out)
+    return toast
+
+
+def mostrar_popup_errores(parent, titulo, es_error, subtitulo, cabeceras, filas, pie_pagina):
+    """Muestra un cuadro de diálogo modal premium, translúcido (glassmorphism) y sin barra de título del OS."""
+    dialog = tk.Toplevel(parent)
+    dialog.overrideredirect(True)
+    dialog.attributes('-topmost', True)
+    dialog.grab_set()
+    dialog.focus_set()
+    dialog.attributes('-alpha', 0.94)  # Efecto translúcido de glassmorphism
+    dialog.configure(bg='#162016')
+    
+    if es_error == 'gray' or es_error == 'gris':
+        border_color = '#888a80'
+        icono = '🚫'
+    elif es_error is True:
+        border_color = '#ff4444'
+        icono = '🚫'
+    else:
+        border_color = '#ffd700'
+        icono = '⚠️'
+    
+    # Limpiar cualquier símbolo duplicado al inicio del título
+    clean_title = titulo
+    for sym in ['🚫', '⚠️']:
+        clean_title = clean_title.replace(sym, '').strip()
+    
+    # ── Barra de Título Personalizada (Drag handle + Botón Cerrar) ──
+    title_bar = tk.Frame(dialog, bg='#1a251a', height=32, highlightbackground=border_color, highlightthickness=1)
+    title_bar.pack(fill='x', side='top')
+    
+    title_lbl = tk.Label(title_bar, text=f"  {icono}  {clean_title}", font=('Segoe UI', 9, 'bold'), bg='#1a251a', fg='#f0f0e8')
+    title_lbl.pack(side='left', pady=4)
+    
+    close_btn = tk.Label(title_bar, text='✕', font=('Segoe UI', 11, 'bold'), bg='#1a251a', fg='#888a80', cursor='hand2')
+    close_btn.pack(side='right', padx=12, pady=4)
+    close_btn.bind("<Enter>", lambda e: close_btn.config(fg='#ff4444'))
+    close_btn.bind("<Leave>", lambda e: close_btn.config(fg='#888a80'))
+    close_btn.bind("<Button-1>", lambda e: dialog.destroy())
+    
+    # Soporte para arrastrar la ventana desde la barra de título personalizada
+    def start_drag(event):
+        dialog._drag_x = event.x
+        dialog._drag_y = event.y
+    def drag_motion(event):
+        dx = event.x - dialog._drag_x
+        dy = event.y - dialog._drag_y
+        x = dialog.winfo_x() + dx
+        y = dialog.winfo_y() + dy
+        dialog.geometry(f"+{x}+{y}")
+        
+    title_bar.bind("<Button-1>", start_drag)
+    title_bar.bind("<B1-Motion>", drag_motion)
+    title_lbl.bind("<Button-1>", start_drag)
+    title_lbl.bind("<B1-Motion>", drag_motion)
+    
+    # ── Contenido Principal ──
+    main_frame = tk.Frame(dialog, bg='#162016', highlightbackground=border_color,
+                          highlightthickness=2, padx=20, pady=20)
+    main_frame.pack(fill='both', expand=True)
+    
+    # Subtítulo e Icono principal
+    hdr_frame = tk.Frame(main_frame, bg='#162016')
+    hdr_frame.pack(fill='x', pady=(0,15))
+    
+    tk.Label(hdr_frame, text=icono, font=('Segoe UI', 24), bg='#162016', fg=border_color).pack(side='left', padx=(0,15))
+    
+    sub_lbl = tk.Label(hdr_frame, text=subtitulo, font=('Segoe UI', 11, 'bold'),
+                       bg='#162016', fg='#f0f0e8', justify='left', anchor='w')
+    sub_lbl.pack(side='left', fill='x', expand=True)
+    
+    col_widths = [len(c) for c in cabeceras]
+    for row in filas:
+        for idx, val in enumerate(row):
+            col_widths[idx] = max(col_widths[idx], len(str(val)))
+            
+    header_str = " | ".join(str(cabeceras[i]).ljust(col_widths[i]) for i in range(len(cabeceras)))
+    separator = "─" * (sum(col_widths) + 3 * (len(cabeceras) - 1))
+    
+    text_content = header_str + "\n" + separator + "\n"
+    for row in filas:
+        row_str = " | ".join(str(row[i]).ljust(col_widths[i]) for i in range(len(row)))
+        text_content += row_str + "\n"
+        
+    txt_frame = tk.Frame(main_frame, bg='#1a251a', highlightbackground='#2a3a2a', highlightthickness=1)
+    txt_frame.pack(fill='both', expand=True, pady=10)
+    
+    scroll_y = tk.Scrollbar(txt_frame, orient='vertical')
+    scroll_x = tk.Scrollbar(txt_frame, orient='horizontal')
+    
+    h_lines = min(max(len(filas) + 3, 6), 16)
+    
+    txt = tk.Text(txt_frame, font=('Consolas', 10), bg='#1a251a', fg='#7aff00' if es_error else '#ffd700',
+                  height=h_lines, width=sum(col_widths) + 6, wrap='none',
+                  yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set,
+                  relief='flat', padx=10, pady=10, bd=0)
+    
+    scroll_y.config(command=txt.yview)
+    scroll_x.config(command=txt.xview)
+    
+    txt.insert('1.0', text_content.strip())
+    txt.config(state='disabled')
+    
+    txt.grid(row=0, column=0, sticky='nsew')
+    scroll_y.grid(row=0, column=1, sticky='ns')
+    scroll_x.grid(row=1, column=0, sticky='ew')
+    
+    txt_frame.rowconfigure(0, weight=1)
+    txt_frame.columnconfigure(0, weight=1)
+    
+    if pie_pagina:
+        tk.Label(main_frame, text=pie_pagina, font=('Segoe UI', 9, 'italic'),
+                 bg='#162016', fg='#888a80', anchor='w').pack(fill='x', pady=(5,15))
+                 
+    btn_frame = tk.Frame(main_frame, bg='#162016')
+    btn_frame.pack(fill='x', side='bottom')
+    
+    if es_error == 'gray' or es_error == 'gris':
+        btn_color = '#888a80'
+    elif es_error is True:
+        btn_color = '#ff4444'
+    else:
+        btn_color = '#ffd700'
+    text_color = '#131a13'
+    
+    btn = tk.Button(btn_frame, text='Aceptar', font=('Segoe UI', 10, 'bold'),
+                    bg=btn_color, fg=text_color, activebackground=border_color, activeforeground=text_color,
+                    relief='flat', padx=24, pady=5, cursor='hand2', command=dialog.destroy)
+    btn.pack(side='right')
+    
+    dialog.update_idletasks()
+    
+    pw = parent.winfo_width(); ph = parent.winfo_height()
+    px = parent.winfo_rootx(); py = parent.winfo_rooty()
+    
+    # Calcular tamaños geométricos óptimos
+    dw = max(dialog.winfo_reqwidth(), sum(col_widths)*8 + 60)
+    dh = dialog.winfo_reqheight() + 32  # Sumar el alto de la barra de título personalizada
+    
+    x = px + (pw - dw) // 2
+    y = py + (ph - dh) // 2
+    dialog.geometry(f'{dw}x{dh}+{x}+{y}')
+    
+    dialog.bind('<Escape>', lambda e: dialog.destroy())
+    dialog.bind('<Return>', lambda e: dialog.destroy())
+    
+    dialog.wait_window()
+
+
+# ════════════════════════════════════════════════════════════
+#  INTERFAZ GRÁFICA
+# ════════════════════════════════════════════════════════════
+
+VERDE='#7aff00'; FONDO='#131a13'; SURFACE='#1a251a'
+TEXTO='#f0f0e8'; MUTED='#888a80'; ROJO='#ff4444'
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("verificador de pre ordenes")
+        self.geometry('1280x760'); self.minsize(1050,620)
+        self.configure(bg=FONDO); self.resizable(True,True)
+        self.overrideredirect(True)
+        self.attributes('-alpha', 0.98)
+
+        # Icono de la ventana
+        self.title_ico_img = None
+        for ico in ['cotejo_icon.ico', 'igss_logo.png']:
+            ico_path = obtener_ruta_recurso(ico)
+            if os.path.exists(ico_path):
+                try:
+                    if ico.endswith('.ico'):
+                        self.iconbitmap(ico_path)
+                    else:
+                        img = ImageTk.PhotoImage(Image.open(ico_path).resize((32,32)))
+                        self.iconphoto(True, img)
+                    
+                    # Cargar logo de 16x16 para la barra de título personalizada
+                    pil_img = Image.open(ico_path).convert('RGBA')
+                    resized = pil_img.resize((16, 16), Image.LANCZOS)
+                    self.title_ico_img = ImageTk.PhotoImage(resized)
+                except: pass
+                break
+
+        self.excel_path=tk.StringVar(); self.pdf_path=tk.StringVar()
+        self.consol_path=tk.StringVar(); self.status_var=tk.StringVar(value='Listo')
+        
+        # Parámetros manuales de pedido
+        self.correlativo_var=tk.StringVar()
+        self.anio_var=tk.StringVar(value=str(datetime.now().year))
+        
+        # Lista de unidades más utilizadas
+        self.unidades_list = [
+            "120209 — UIA SAN PEDRO",
+            "120201 — CONSULTORIO SAN MARCOS",
+            "120200 — DEPARTAMENTAL SAN MARCOS",
+            "120202 — UIA SAN RAFAEL PIE DE LA CUESTA",
+            "120203 — UIA SAN PEDRO SACATEPEQUEZ"
+        ]
+        self.unidad_var=tk.StringVar(value=self.unidades_list[0])
+        
+        # Traces para habilitar/deshabilitar COTEJAR de forma reactiva
+        self.excel_path.trace_add('write', lambda *args: self._check_ready())
+        self.pdf_path.trace_add('write', lambda *args: self._check_ready())
+        self.consol_path.trace_add('write', lambda *args: self._check_ready())
+        self.correlativo_var.trace_add('write', lambda *args: self._check_ready())
+        self.unidad_var.trace_add('write', lambda *args: self._check_ready())
+
+        self.pdf_data=self.consol_data=self.resultados=None
+        self._uid=self._corr=self._sub_incorrectos=self._sub_prohibidos=None
+        self._logo_img = None
+        self._logo_pil = _make_igss_logo()
+        self._show_logo = True
+        self._build_ui()
+        # Verificar actualizaciones en background al iniciar
+        threading.Thread(target=self._check_updates_bg, daemon=True).start()
+
+    def minimize_window(self):
+        self.overrideredirect(False)
+        self.iconify()
+        self.bind("<Map>", self.on_map)
+
+    def on_map(self, event=None):
+        self.overrideredirect(True)
+        self.unbind("<Map>")
+    def toggle_maximize(self):
+        if getattr(self, '_is_maximized', False):
+            self.geometry(self._prev_geometry)
+            self._is_maximized = False
+            if hasattr(self, 'max_btn'):
+                self.max_btn.config(text='▢')
+        else:
+            self._prev_geometry = self.geometry()
+            self._is_maximized = True
+            if hasattr(self, 'max_btn'):
+                self.max_btn.config(text='❐')
+            w = self.winfo_screenwidth()
+            h = self.winfo_screenheight() - 40
+            self.geometry(f"{w}x{h}+0+0")
+    def _check_updates_bg(self):
+        """Corre en thread — si hay update muestra toast en el hilo principal."""
+        latest, dl_url, notes = check_for_updates()
+        if latest:
+            self.after(0, self._mostrar_update_toast, latest, dl_url, notes)
+
+    def _mostrar_update_toast(self, latest, dl_url, notes):
+        """Toast especial para actualizaciones — persiste hasta que el usuario lo cierra."""
+        toast = tk.Toplevel(self)
+        toast.overrideredirect(True)
+        toast.attributes('-topmost', True)
+        toast.attributes('-alpha', 0.96)
+        toast.configure(bg='#1a251a')
+
+        frame = tk.Frame(toast, bg='#1a251a', highlightbackground='#7aff00',
+                         highlightthickness=2, padx=20, pady=12)
+        frame.pack()
+
+        tk.Label(frame, text='🔄', font=('Segoe UI', 18), bg='#1a251a', fg='#7aff00'
+                 ).grid(row=0, column=0, rowspan=2, padx=(0,14))
+        tk.Label(frame, text=f'Nueva versión disponible: v{latest}',
+                 font=('Consolas', 11, 'bold'), bg='#1a251a', fg='#f0f0e8'
+                 ).grid(row=0, column=1, columnspan=2, sticky='w')
+        if notes:
+            tk.Label(frame, text=notes, font=('Consolas', 9), bg='#1a251a', fg='#888a80',
+                     wraplength=280).grid(row=1, column=1, columnspan=2, sticky='w')
+
+        btn_frame = tk.Frame(frame, bg='#1a251a'); btn_frame.grid(row=2, column=1, columnspan=2, pady=(10,0), sticky='e')
+
+        def _descargar():
+            webbrowser.open(dl_url); toast.destroy()
+
+        tk.Button(btn_frame, text='⬇  Descargar', font=('Consolas', 9, 'bold'),
+                  bg='#7aff00', fg='#131a13', relief='flat', padx=14, pady=4,
+                  cursor='hand2', command=_descargar).pack(side='left', padx=(0,8))
+        tk.Button(btn_frame, text='Ahora no', font=('Consolas', 9),
+                  bg='#2a3a2a', fg='#f0f0e8', relief='flat', padx=10, pady=4,
+                  cursor='hand2', command=toast.destroy).pack(side='left')
+
+        toast.update_idletasks()
+        px = self.winfo_rootx(); py = self.winfo_rooty()
+        ph = self.winfo_height()
+        tw = toast.winfo_reqwidth(); th = toast.winfo_reqheight()
+        toast.geometry(f'+{px+20}+{py+ph-th-20}')
+
+    def _build_ui(self):
+        # ── Barra de Título Personalizada para Ventana Principal ──
+        self.title_bar = tk.Frame(self, bg='#0e140e', height=30)
+        self.title_bar.pack(fill='x', side='top')
+        self.title_bar.pack_propagate(False)
+        
+        # Título e Icono a la izquierda
+        self.ico_lbl = None
+        if hasattr(self, 'title_ico_img') and self.title_ico_img:
+            self.ico_lbl = tk.Label(self.title_bar, image=self.title_ico_img, bg='#0e140e')
+            self.ico_lbl.pack(side='left', padx=(10, 4), pady=4)
+            title_text = f" {APP_TITLE}"
+        else:
+            title_text = f"  ⚡  {APP_TITLE}"
+
+        title_lbl = tk.Label(self.title_bar, text=title_text, font=('Consolas', 9, 'bold'), bg='#0e140e', fg='#f0f0e8')
+        title_lbl.pack(side='left', pady=4)
+        
+        # Controles de ventana interactivos a la derecha
+        close_btn = tk.Label(self.title_bar, text='✕', font=('Segoe UI', 11, 'bold'), bg='#0e140e', fg='#888a80', cursor='hand2', width=4)
+        close_btn.pack(side='right', fill='y')
+        close_btn.bind("<Enter>", lambda e: close_btn.config(bg='#ff4444', fg='#ffffff'))
+        close_btn.bind("<Leave>", lambda e: close_btn.config(bg='#0e140e', fg='#888a80'))
+        close_btn.bind("<Button-1>", lambda e: self.destroy())
+        
+        self.max_btn = tk.Label(self.title_bar, text='▢', font=('Segoe UI', 11, 'bold'), bg='#0e140e', fg='#888a80', cursor='hand2', width=4)
+        self.max_btn.pack(side='right', fill='y')
+        self.max_btn.bind("<Enter>", lambda e: self.max_btn.config(bg='#2a3a2a', fg='#ffffff'))
+        self.max_btn.bind("<Leave>", lambda e: self.max_btn.config(bg='#0e140e', fg='#888a80'))
+        self.max_btn.bind("<Button-1>", lambda e: self.toggle_maximize())
+        
+        min_btn = tk.Label(self.title_bar, text='—', font=('Segoe UI', 11, 'bold'), bg='#0e140e', fg='#888a80', cursor='hand2', width=4)
+        min_btn.pack(side='right', fill='y')
+        min_btn.bind("<Enter>", lambda e: min_btn.config(bg='#2a3a2a', fg='#ffffff'))
+        min_btn.bind("<Leave>", lambda e: min_btn.config(bg='#0e140e', fg='#888a80'))
+        min_btn.bind("<Button-1>", lambda e: self.minimize_window())
+        
+        # Funcionalidad de arrastre (drag-and-drop) para mover la ventana principal
+        def start_drag(event):
+            self._drag_x = event.x
+            self._drag_y = event.y
+        def drag_motion(event):
+            if getattr(self, '_is_maximized', False):
+                return
+            dx = event.x - self._drag_x
+            dy = event.y - self._drag_y
+            x = self.winfo_x() + dx
+            y = self.winfo_y() + dy
+            self.geometry(f"+{x}+{y}")
+            
+        self.title_bar.bind("<Button-1>", start_drag)
+        self.title_bar.bind("<B1-Motion>", drag_motion)
+        title_lbl.bind("<Button-1>", start_drag)
+        title_lbl.bind("<B1-Motion>", drag_motion)
+        if self.ico_lbl:
+            self.ico_lbl.bind("<Button-1>", start_drag)
+            self.ico_lbl.bind("<B1-Motion>", drag_motion)
+            
+        # Enlaces de doble clic para maximizar
+        self.title_bar.bind("<Double-Button-1>", lambda e: self.toggle_maximize())
+        title_lbl.bind("<Double-Button-1>", lambda e: self.toggle_maximize())
+        if self.ico_lbl:
+            self.ico_lbl.bind("<Double-Button-1>", lambda e: self.toggle_maximize())
+
+        # ── Contenido de la Aplicación ──
+        hdr=tk.Frame(self,bg=SURFACE,pady=10); hdr.pack(fill='x')
+        tk.Label(hdr,text='CONSULTORIO DEL INSTITUTO',font=('Consolas',16,'bold'),bg=SURFACE,fg=TEXTO).pack(side='left',padx=(18,0))
+        tk.Label(hdr,text=' EN SAN MARCOS',           font=('Consolas',16,'bold'),bg=SURFACE,fg=VERDE).pack(side='left')
+        tk.Label(hdr,text='  |  Cotejo Triple SIAF',  font=('Segoe UI',10),       bg=SURFACE,fg=MUTED).pack(side='left')
+
+        panel=tk.Frame(self,bg=FONDO,pady=10); panel.pack(fill='x',padx=20)
+        self._file_row(panel,'📊  Reporte Excel:',     self.excel_path, self._pick_excel, 0)
+        self._file_row(panel,'📄  Forma A-01 PDF:',    self.pdf_path,   self._pick_pdf,   1, optional=True)
+        self._file_row(panel,'🗂  Consolidación .xls:', self.consol_path,self._pick_consol,2)
+
+        # Controles manuales (Unidad y Correlativo)
+        tk.Label(panel, text='🏢  Unidad de Adscripción:', font=('Segoe UI', 10), bg=FONDO, fg=TEXTO, width=28, anchor='w').grid(row=3, column=0, sticky='w', padx=(0,8), pady=3)
+        cb_unidad = ttk.Combobox(panel, textvariable=self.unidad_var, values=self.unidades_list, font=('Consolas', 9), state='normal')
+        cb_unidad.grid(row=3, column=1, sticky='ew', padx=(0,8))
+        cb_unidad.bind('<<ComboboxSelected>>', lambda e: self._check_ready())
+
+        tk.Label(panel, text='🔢  Correlativo / Año:', font=('Segoe UI', 10), bg=FONDO, fg=TEXTO, width=28, anchor='w').grid(row=4, column=0, sticky='w', padx=(0,8), pady=3)
+        corr_frame = tk.Frame(panel, bg=FONDO)
+        corr_frame.grid(row=4, column=1, sticky='w', padx=(0,8))
+
+        tk.Entry(corr_frame, textvariable=self.correlativo_var, font=('Consolas', 9), bg=SURFACE, fg=VERDE, insertbackground=VERDE, relief='flat', width=18).pack(side='left')
+        tk.Label(corr_frame, text='  /  ', font=('Consolas', 10, 'bold'), bg=FONDO, fg=TEXTO).pack(side='left')
+
+        years = [str(y) for y in range(datetime.now().year + 1, datetime.now().year - 5, -1)]
+        cb_year = ttk.Combobox(corr_frame, textvariable=self.anio_var, values=years, font=('Consolas', 9), width=8, state='normal')
+        cb_year.pack(side='left')
+        cb_year.bind('<<ComboboxSelected>>', lambda e: self._check_ready())
+
+        bf=tk.Frame(self,bg=FONDO); bf.pack(pady=(2,8))
+        self.btn_cotejar=tk.Button(bf,text='⚡  COTEJAR',font=('Consolas',12,'bold'),
+            bg=VERDE,fg=FONDO,relief='flat',padx=28,pady=7,cursor='hand2',
+            command=self._start_cotejo,state='disabled'); self.btn_cotejar.pack(side='left',padx=6)
+        self.btn_export=tk.Button(bf,text='📥  Exportar Reporte',font=('Consolas',10),
+            bg=SURFACE,fg=TEXTO,relief='flat',padx=18,pady=7,cursor='hand2',
+            command=self._exportar,state='disabled'); self.btn_export.pack(side='left',padx=6)
+
+        self.info_bar=tk.Frame(self,bg=SURFACE,pady=5); self.info_bar.pack(fill='x',padx=20)
+        self.lbl_info=tk.Label(self.info_bar,text='',font=('Consolas',9),bg=SURFACE,fg=MUTED)
+        self.lbl_info.pack(side='left',padx=10)
+
+        # ── Tabla ──
+        self.tf_container = tf = tk.Frame(self,bg=FONDO)
+        tf.pack(fill='both',expand=True,padx=20,pady=(6,0))
+
+        cols   = ('Cód. Interno','PPR','Subproducto','Cant. PDF','Cant. Excel','Cant. Pre Orden','Estado')
+        # ── Anchos fijos + stretch=True en Estado para ocupar todo el recuadro sin cortar texto ──
+        widths = [100, 80, 130, 88, 100, 120, 480]
+        self.tree=ttk.Treeview(tf,columns=cols,show='headings',height=22)
+        for col,w in zip(cols,widths):
+            self.tree.heading(col,text=col)
+            self.tree.column(col, width=w, minwidth=w, stretch=(col == 'Estado'),
+                             anchor='center' if w < 200 else 'w')
+
+        if self._logo_pil:
+            self._logo_lbl = tk.Label(tf, bg=SURFACE, bd=0)
+            self._logo_lbl.place(relx=0.5, rely=0.5, anchor='center')
+            tf.bind('<Configure>', self._reposition_logo)
+
+        vsb=ttk.Scrollbar(tf,orient='vertical',  command=self.tree.yview)
+        hsb=ttk.Scrollbar(tf,orient='horizontal', command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0,column=0,sticky='nsew')
+        vsb.grid(row=0,column=1,sticky='ns')
+        hsb.grid(row=1,column=0,sticky='ew')
+        tf.rowconfigure(0,weight=1); tf.columnconfigure(0,weight=1)
+
+        self.tree.tag_configure('ok',           background='#1a3a1a', foreground='#7aff00')
+        self.tree.tag_configure('error',        background='#3a1a1a', foreground='#ff6666')
+        self.tree.tag_configure('warning',      background='#3a2a00', foreground='#ffd700')
+        self.tree.tag_configure('sub_incorr',   background='#3a1a1a', foreground='#ff6666')
+        self.tree.tag_configure('consol_mayor', background='#3a2a00', foreground='#ffd700')
+        self.tree.tag_configure('consol_menor', background='#3a1a1a', foreground='#ff6666')
+        self.tree.tag_configure('prohibido',    background='#5a0000', foreground='#ff0000')
+
+        sb=tk.Frame(self,bg=SURFACE,pady=5); sb.pack(fill='x',side='bottom')
+        tk.Label(sb,textvariable=self.status_var,font=('Consolas',9),bg=SURFACE,fg=VERDE).pack(side='left',padx=12)
+        tk.Label(sb,text=f'v{APP_VERSION} — {APP_AUTHOR}',font=('Consolas',8),bg=SURFACE,fg=MUTED).pack(side='right',padx=12)
+        self.progress=ttk.Progressbar(sb,mode='indeterminate',length=160); self.progress.pack(side='right',padx=6)
+
+        s=ttk.Style(self); s.theme_use('clam')
+        s.configure('Treeview',background=SURFACE,foreground=TEXTO,fieldbackground=SURFACE,rowheight=26,font=('Consolas',9))
+        s.configure('Treeview.Heading',background='#2a3a2a',foreground=VERDE,font=('Consolas',9,'bold'))
+        s.map('Treeview',background=[('selected','#2a4a2a')])
+        
+        # Estilo premium para los Comboboxes del tema oscuro
+        s.configure('TCombobox', fieldbackground=SURFACE, background='#2a3a2a', foreground=VERDE, arrowcolor=VERDE)
+        s.map('TCombobox', fieldbackground=[('readonly', SURFACE)], foreground=[('readonly', VERDE)])
+
+    def _reposition_logo(self, event=None):
+        if event and event.widget != self.tf_container: return
+        if hasattr(self, '_show_logo') and not self._show_logo: return
+        if hasattr(self, '_logo_lbl') and hasattr(self, '_logo_pil') and self._logo_pil:
+            if event: cw, ch = event.width, event.height
+            else:
+                self.update_idletasks()
+                cw = self.tf_container.winfo_width()
+                ch = self.tf_container.winfo_height()
+            if cw > 20 and ch > 20:
+                scale_dim = min(cw, ch) * 0.80
+                orig_w, orig_h = self._logo_pil.size
+                ratio = scale_dim / max(orig_w, orig_h)
+                new_w = int(orig_w * ratio); new_h = int(orig_h * ratio)
+                resized = self._logo_pil.resize((new_w, new_h), Image.LANCZOS)
+                self._logo_img = ImageTk.PhotoImage(resized)
+                self._logo_lbl.config(image=self._logo_img)
+            self._logo_lbl.place(relx=0.005, rely=0.5, anchor='w')
+
+    def _file_row(self,parent,label,var,cmd,row,optional=False):
+        color=MUTED if optional else TEXTO; sfx='  (opcional)' if optional else ''
+        tk.Label(parent,text=label+sfx,font=('Segoe UI',10),bg=FONDO,fg=color,width=28,anchor='w').grid(row=row,column=0,sticky='w',padx=(0,8),pady=3)
+        tk.Entry(parent,textvariable=var,font=('Consolas',9),bg=SURFACE,fg=VERDE,insertbackground=VERDE,relief='flat',width=60).grid(row=row,column=1,sticky='ew',padx=(0,8))
+        tk.Button(parent,text='Examinar…',font=('Segoe UI',9),bg='#2a3a2a',fg=TEXTO,relief='flat',cursor='hand2',command=cmd).grid(row=row,column=2,pady=3)
+        parent.columnconfigure(1,weight=1)
+
+    def _pick_excel(self):
+        p=filedialog.askopenfilename(title='Reporte Excel',filetypes=[('Excel','*.xlsx *.xls'),('Todos','*.*')])
+        if p: self.excel_path.set(p); self._check_ready()
+
+    def _pick_pdf(self):
+        p=filedialog.askopenfilename(title='Forma A-01 PDF',filetypes=[('PDF','*.pdf'),('Todos','*.*')])
+        if p: self.pdf_path.set(p); self._check_ready()
+
+    def _pick_consol(self):
+        p=filedialog.askopenfilename(title='Consolidación',filetypes=[('Excel/XML','*.xls *.xlsx'),('Todos','*.*')])
+        if p: self.consol_path.set(p); self._check_ready()
+
+    def _check_ready(self):
+        has_excel = bool(self.excel_path.get())
+        has_consol = bool(self.consol_path.get())
+        has_pdf = bool(self.pdf_path.get())
+        has_manual = bool(self.correlativo_var.get().strip()) and bool(self.unidad_var.get().strip())
+        
+        if has_excel and has_consol and (has_pdf or has_manual):
+            self.btn_cotejar.config(state='normal')
+        else:
+            self.btn_cotejar.config(state='disabled')
+
+    def _start_cotejo(self):
+        self._show_logo = True; self._reposition_logo()
+        self.btn_cotejar.config(state='disabled'); self.btn_export.config(state='disabled')
+        self.lbl_info.config(text='')
+        for row in self.tree.get_children(): self.tree.delete(row)
+        self.progress.start(12)
+        mostrar_toast(self, 'Procesando documentos…\nEsto puede tomar unos segundos.', duracion_ms=4000)
+        threading.Thread(target=self._run_cotejo,daemon=True).start()
+
+    def _run_cotejo(self):
+        try:
+            if self.pdf_path.get():
+                self._set_status('Leyendo PDF con OCR…')
+                pdf_data=parse_pdf(self.pdf_path.get(),progress_cb=self._set_status)
+                if pdf_data:
+                    corr = pdf_data['correlativo'] or ''
+                    uid_str = pdf_data['unidad_id'] or ''
+                    if '/' in corr:
+                        corr_num, corr_year = corr.split('/', 1)
+                    else:
+                        corr_num, corr_year = corr, str(datetime.now().year)
+                    
+                    matched_unit = None
+                    for unit in self.unidades_list:
+                        if unit.startswith(uid_str):
+                            matched_unit = unit
+                            break
+                    
+                    self.after(0, lambda: [
+                        self.correlativo_var.set(corr_num),
+                        self.anio_var.set(corr_year),
+                        self.unidad_var.set(matched_unit or uid_str)
+                    ])
+            else:
+                self._set_status('Iniciando cotejo manual (leyendo desde Excel)…')
+                val_unit = self.unidad_var.get().strip()
+                m = re.match(r'^(\d+)', val_unit)
+                uid = m.group(1) if m else val_unit
+                
+                corr_num = self.correlativo_var.get().strip()
+                corr_year = self.anio_var.get().strip()
+                
+                pdf_data = generar_pdf_data_desde_excel(self.excel_path.get(), uid, corr_num, corr_year)
+            self.pdf_data=pdf_data
+            
+            self._set_status('Leyendo Consolidación…')
+            consol_data=parse_consolidacion(self.consol_path.get())
+            self.consol_data=consol_data
+            self._set_status('Cotejando los 3 documentos…')
+            resultados,uid,corr,ppr_warning,sub_incorrectos,sub_prohibidos=cotejar_triple(
+                self.excel_path.get(),pdf_data,consol_data)
+            self.resultados=resultados; self._uid=uid; self._corr=corr
+            self._sub_incorrectos=sub_incorrectos; self._sub_prohibidos=sub_prohibidos
+            self.after(0,self._mostrar_resultados,resultados,uid,corr,consol_data,
+                       ppr_warning,sub_incorrectos,sub_prohibidos)
+        except Exception as e:
+            self.after(0,self._mostrar_error,str(e))
+
+    def _mostrar_resultados(self,resultados,uid,corr,consol_data,
+                             ppr_warning,sub_incorrectos,sub_prohibidos):
+        if hasattr(self,'_logo_lbl'): self._logo_lbl.place_forget()
+        self._show_logo = False
+        self.progress.stop()
+        self.btn_cotejar.config(state='normal'); self.btn_export.config(state='normal')
+        if ppr_warning: messagebox.showwarning('Sin columna Código PPR',ppr_warning)
+
+        ok=sum(1 for r in resultados if r['estado']=='OK')
+        total=len(resultados); errores=total-ok
+        ct=f"   |   Pre orden: {consol_data['num']}  Pre-Orden: {consol_data['preorden']}" if consol_data else ''
+        self.lbl_info.config(
+            text=f'Unidad: {uid}   Correlativo: {corr}{ct}   |   Total: {total}   ✅ OK: {ok}   ❌ Errores: {errores}',
+            fg=VERDE if errores==0 else ROJO)
+
+        TAG_MAP={
+            'OK':'ok', 'DIFERENCIA_EXCEL':'error', 'DIFERENCIA_AMBOS':'error',
+            'FALTANTE_EXCEL':'error', 'SOBRANTE_EXCEL':'warning',
+            'SUB_INCORRECTO':'sub_incorr', 'SUB_PROHIBIDO':'prohibido',
+            'DIFERENCIA_CONSOL_MAYOR':'consol_mayor', 'DIFERENCIA_CONSOL_MENOR':'consol_menor',
+        }
+        for r in resultados:
+            label=ESTADO_LABELS.get(r['estado'],r['estado'])
+            if r['estado'] in ('SUB_INCORRECTO', 'SUB_PROHIBIDO') and r.get('sub_en_consol'):
+                label+=f"  (Pre orden tiene: {r['sub_en_consol']})"
+            self.tree.insert('','end',values=(
+                r['codigo'],r['ppr'],r['subproducto'],
+                r['cant_pdf']    if r['cant_pdf']    is not None else '—',
+                r['cant_excel']  if r['cant_excel']  is not None else '—',
+                r['cant_consol'] if r['cant_consol'] is not None else '—',
+                label,
+            ),tags=(TAG_MAP.get(r['estado'],'ok'),))
+
+        # Popup subproductos prohibidos (prioridad máxima)
+        if sub_prohibidos:
+            n = len(sub_prohibidos)
+            cabeceras = ['Código Interno', 'Código PPR', 'SubProducto PROHIBIDO', 'Origen']
+            filas = [[str(sp['codigo']), str(sp['ppr']), str(sp['subproducto']), str(sp['origen'])] for sp in sub_prohibidos]
+            
+            subt = f"Se detectaron {n} línea(s) con SubProductos que NO están autorizados\npara este tipo de compra. Deben eliminarse o corregirse."
+            pie = f"SubProductos prohibidos configurados: {', '.join(SUBPRODUCTOS_PROHIBIDOS)}\nEstos errores se detallan al final del reporte exportado."
+            
+            mostrar_popup_errores(self, f"🚫 {n} SubProducto(s) NO PERMITIDO(s)", True, subt, cabeceras, filas, pie)
+
+        # Popup subproductos incorrectos
+        if sub_incorrectos:
+            n = len(sub_incorrectos)
+            cabeceras = ['Código Interno', 'Código PPR', 'SubProducto en Pedido', 'SubProducto en Pre orden']
+            filas = [[str(si['codigo']), str(si['ppr']), str(si['sub_pedido']), str(si['sub_consol'])] for si in sub_incorrectos]
+            
+            subt = f"Se detectaron {n} código(s) con un SubProducto diferente en Pre orden\nrespecto al Pedido. Deben ser corregidos en el sistema."
+            pie = "Aparecen destacados en rojo y se detallan al final del reporte exportado."
+            
+            mostrar_popup_errores(self, f"⚠️ {n} SubProducto(s) incorrecto(s)", False, subt, cabeceras, filas, pie)
+
+        msg=(f'✅ Todo correcto ({total} líneas)' if errores==0
+             else f'⚠️  {errores} diferencia(s) encontrada(s) de {total}')
+        self._set_status(msg)
+
+    def _mostrar_error(self,msg):
+        self._show_logo=True; self._reposition_logo()
+        self.progress.stop(); self.btn_cotejar.config(state='normal')
+        self._set_status(f'Error: {msg}')
+        
+        # Mostrar el error en la ventana modal premium con tema oscuro
+        cabeceras = ['Detalle del error']
+        filas = [[str(msg)]]
+        subt = "Se ha producido un error durante el procesamiento de la información:"
+        pie = "Verifica que el número correlativo, el año, la unidad o los archivos sean válidos."
+        mostrar_popup_errores(self, "🚫 Error en la Aplicación", "gray", subt, cabeceras, filas, pie)
+
+    def _exportar(self):
+        if not self.resultados: return
+        try:
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            default_name = f"Verificacion_PreOrdenes_{self._uid}_{self._corr.replace('/', '_')}_{ts}.xlsx"
+            
+            path = filedialog.asksaveasfilename(
+                title="Guardar Reporte de Verificación",
+                initialfile=default_name,
+                defaultextension=".xlsx",
+                filetypes=[("Excel", "*.xlsx"), ("Todos los archivos", "*.*")]
+            )
+            
+            if not path:
+                return
+                
+            exportar_reporte(self.resultados, self._uid, self._corr,
+                             self.consol_data, self._sub_incorrectos, self._sub_prohibidos, outpath=path)
+            messagebox.showinfo('Reporte guardado', f'Guardado con éxito en:\n{path}')
+        except Exception as e:
+            messagebox.showerror('Error al exportar', str(e))
+
+    def _set_status(self,msg):
+        self.after(0,lambda: self.status_var.set(msg))
+
+# ════════════════════════════════════════════════════════════
+if __name__ == '__main__':
+    app=App()
+    app.mainloop()
