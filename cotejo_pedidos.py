@@ -766,13 +766,14 @@ class App(tk.Tk):
         self.correlativo_var=tk.StringVar()
         self.anio_var=tk.StringVar(value=str(datetime.now().year))
         
-        # Lista de unidades más utilizadas
+        # Lista de unidades de adscripción — IGSS San Marcos
         self.unidades_list = [
-            "120209 — UIA SAN PEDRO",
-            "120201 — CONSULTORIO SAN MARCOS",
-            "120200 — DEPARTAMENTAL SAN MARCOS",
-            "120202 — UIA SAN RAFAEL PIE DE LA CUESTA",
-            "120203 — UIA SAN PEDRO SACATEPEQUEZ"
+            "120102 — CAJA DEPARTAMENTAL EN SAN MARCOS",
+            "120104 — CONSULTORIO DEL INSTITUTO EN SAN MARCOS",
+            "120209 — UIA SAN PEDRO SACATEPÉQUEZ, SAN MARCOS",
+            "121009 — UIA TEJUTLA, SAN MARCOS",
+            "121109 — UIA SAN RAFAEL PIE DE LA CUESTA, SAN MARCOS",
+            "122309 — UIA IXCHIGUÁN, SAN MARCOS",
         ]
         self.unidad_var=tk.StringVar(value=self.unidades_list[0])
         
@@ -1219,6 +1220,159 @@ class App(tk.Tk):
         self.after(0,lambda: self.status_var.set(msg))
 
 # ════════════════════════════════════════════════════════════
+# LAUNCHER — Menú principal de utilidades IGSS
+# Para agregar una nueva herramienta, añade una entrada a TOOLS_REGISTRY
+# con su nombre, ícono, descripción y la función que la abre.
+# ════════════════════════════════════════════════════════════
+
+TOOLS_REGISTRY = [
+    {
+        "id": "cotejo",
+        "icon": "🔍",
+        "name": "Cotejo de\nPre-Órdenes",
+        "desc": "Verificación tripartita\nde órdenes de compra",
+        "ready": True,
+    },
+    # ── Agrega nuevas herramientas aquí ──────────────────────
+    # {
+    #     "id": "mi_nueva_tool",
+    #     "icon": "📊",
+    #     "name": "Nueva\nHerramienta",
+    #     "desc": "Descripción breve\nde la utilidad",
+    #     "ready": True,   # False = muestra como "Próximamente"
+    # },
+]
+
+class LauncherWindow(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self._selected = None
+        self.title("IGSS San Marcos — Utilidades")
+        self.resizable(False, False)
+        self.configure(bg=FONDO)
+        self.attributes('-alpha', 0.98)
+
+        # ── Icono ────────────────────────────────────────────
+        for ico in ['cotejo_icon.ico', 'igss_logo.png']:
+            ico_path = obtener_ruta_recurso(ico)
+            if os.path.exists(ico_path):
+                try:
+                    if ico.endswith('.ico'):
+                        self.iconbitmap(ico_path)
+                    else:
+                        img = ImageTk.PhotoImage(Image.open(ico_path).resize((32, 32)))
+                        self.iconphoto(True, img)
+                    break
+                except Exception:
+                    pass
+
+        # ── Centrar en pantalla ──────────────────────────────
+        self.update_idletasks()
+        cols = min(len(TOOLS_REGISTRY), 4)
+        win_w = max(cols * 180 + 60, 460)
+        win_h = 360
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{win_w}x{win_h}+{(sw-win_w)//2}+{(sh-win_h)//2}")
+
+        self._build_ui()
+
+    # ── UI ───────────────────────────────────────────────────
+    def _build_ui(self):
+        # Cabecera
+        header = tk.Frame(self, bg=SURFACE, pady=0)
+        header.pack(fill='x')
+
+        logo_frame = tk.Frame(header, bg=SURFACE)
+        logo_frame.pack(side='left', padx=18, pady=12)
+        for logo_file in ['igss_logo.png', 'igss_azul-removebg-preview.png']:
+            logo_path = obtener_ruta_recurso(logo_file)
+            if os.path.exists(logo_path):
+                try:
+                    img = Image.open(logo_path).resize((48, 48), Image.LANCZOS)
+                    self._logo = ImageTk.PhotoImage(img)
+                    tk.Label(logo_frame, image=self._logo, bg=SURFACE).pack()
+                    break
+                except Exception:
+                    pass
+
+        title_frame = tk.Frame(header, bg=SURFACE)
+        title_frame.pack(side='left', padx=(0, 18), pady=12)
+        tk.Label(title_frame, text="IGSS — San Marcos", font=('Segoe UI', 15, 'bold'),
+                 bg=SURFACE, fg=VERDE).pack(anchor='w')
+        tk.Label(title_frame, text="Centro de Utilidades Administrativas",
+                 font=('Segoe UI', 9), bg=SURFACE, fg=MUTED).pack(anchor='w')
+
+        # Separador
+        tk.Frame(self, bg=VERDE, height=2).pack(fill='x')
+
+        # Subtítulo
+        tk.Label(self, text="Selecciona la herramienta que deseas usar:",
+                 font=('Segoe UI', 10), bg=FONDO, fg=TEXTO, pady=14).pack()
+
+        # Grid de herramientas
+        grid_frame = tk.Frame(self, bg=FONDO)
+        grid_frame.pack(padx=30, pady=(0, 20))
+
+        for i, tool in enumerate(TOOLS_REGISTRY):
+            col = i % 4
+            row = i // 4
+            self._make_card(grid_frame, tool, row, col)
+
+        # Pie
+        tk.Label(self, text=f"v{APP_VERSION}  ·  {APP_AUTHOR}",
+                 font=('Segoe UI', 8), bg=FONDO, fg=MUTED).pack(side='bottom', pady=8)
+
+    def _make_card(self, parent, tool, row, col):
+        ready = tool.get("ready", False)
+        card_bg = SURFACE if ready else '#111811'
+        card_fg = TEXTO if ready else MUTED
+        icon_fg = VERDE if ready else '#444'
+
+        card = tk.Frame(parent, bg=card_bg, width=155, height=155,
+                        relief='flat', bd=0, cursor='hand2' if ready else 'arrow')
+        card.grid(row=row, column=col, padx=8, pady=8)
+        card.grid_propagate(False)
+
+        tk.Label(card, text=tool['icon'], font=('Segoe UI', 30),
+                 bg=card_bg, fg=icon_fg).place(relx=0.5, rely=0.28, anchor='center')
+        tk.Label(card, text=tool['name'], font=('Segoe UI', 10, 'bold'),
+                 bg=card_bg, fg=card_fg, justify='center').place(relx=0.5, rely=0.57, anchor='center')
+        tk.Label(card, text=tool['desc'] if ready else "Próximamente",
+                 font=('Segoe UI', 7), bg=card_bg, fg=MUTED,
+                 justify='center').place(relx=0.5, rely=0.80, anchor='center')
+
+        # Borde verde inferior como indicador activo
+        if ready:
+            tk.Frame(card, bg=VERDE, height=3).place(relx=0, rely=1.0, anchor='sw',
+                                                      relwidth=1.0, y=-1)
+
+        if ready:
+            def _hover_in(e, c=card):
+                for w in [c] + c.winfo_children():
+                    try: w.config(bg='#223022')
+                    except Exception: pass
+            def _hover_out(e, c=card, orig=card_bg):
+                for w in [c] + c.winfo_children():
+                    try: w.config(bg=orig)
+                    except Exception: pass
+            for widget in [card] + card.winfo_children():
+                widget.bind('<Button-1>', lambda e, tid=tool['id']: self._on_select(tid))
+                widget.bind('<Enter>', _hover_in)
+                widget.bind('<Leave>', _hover_out)
+
+    def _on_select(self, tool_id):
+        self._selected = tool_id
+        self.destroy()
+
+
+# ════════════════════════════════════════════════════════════
 if __name__ == '__main__':
-    app=App()
-    app.mainloop()
+    launcher = LauncherWindow()
+    launcher.mainloop()
+
+    if launcher._selected == 'cotejo':
+        app = App()
+        app.mainloop()
+    # Aquí irán los elif para las nuevas herramientas:
+    # elif launcher._selected == 'mi_nueva_tool':
+    #     MiNuevaHerramienta().mainloop()
