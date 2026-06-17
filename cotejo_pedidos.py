@@ -1895,9 +1895,10 @@ class VerificadorSPS465(tk.Tk):
                 self.after(0, lambda: self._mostrar_resultados(resultados))
 
             except Exception as exc:
-                self.after(0, lambda: [
-                    messagebox.showerror('Error en verificación', str(exc)),
-                    self._set_status(f'Error: {exc}'),
+                msg = str(exc)
+                self.after(0, lambda m=msg: [
+                    messagebox.showerror('Error en verificación', m),
+                    self._set_status(f'Error: {m}'),
                     self.btn_verificar.config(state='normal'),
                     self.progress.stop(),
                 ])
