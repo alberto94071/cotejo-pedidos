@@ -108,19 +108,50 @@ def _make_igss_logo():
 #  PARSERS
 # ════════════════════════════════════════════════════════════
 
+def _get_poppler_path():
+    """Detecta la ruta de Poppler en Windows de forma dinámica."""
+    if os.name != 'nt':
+        return None
+    # 1. Carpeta local junto al script (empaquetado con PyInstaller)
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poppler', 'bin')
+    if os.path.exists(local):
+        return local
+    # 2. Buscar cualquier versión instalada vía WinGet
+    winget_base = os.path.expandvars(
+        r'%LOCALAPPDATA%\Microsoft\WinGet\Packages')
+    if os.path.isdir(winget_base):
+        for entry in os.listdir(winget_base):
+            if 'poppler' in entry.lower():
+                for sub in ['Library\\bin', 'bin']:
+                    candidate = os.path.join(winget_base, entry, sub)
+                    if os.path.isdir(candidate):
+                        return candidate
+                # Buscar un nivel más profundo (ej: poppler-X.Y.Z\Library\bin)
+                entry_path = os.path.join(winget_base, entry)
+                for inner in os.listdir(entry_path):
+                    for sub in ['Library\\bin', 'bin']:
+                        candidate = os.path.join(entry_path, inner, sub)
+                        if os.path.isdir(candidate):
+                            return candidate
+    # 3. Rutas comunes
+    for p in [
+        r'C:\Program Files\poppler\bin',
+        r'C:\Program Files (x86)\poppler\bin',
+        r'C:\poppler\bin',
+        r'C:\tools\poppler\bin',
+    ]:
+        if os.path.isdir(p):
+            return p
+    # 4. Dejar que pdf2image use el PATH del sistema
+    return None
+
+
 def parse_pdf(pdf_path, progress_cb=None):
     _load_ocr_libs()
     poppler_kwargs = {}
-    if os.name == 'nt':
-        local = os.path.join(os.path.dirname(__file__), 'poppler', 'bin')
-        if os.path.exists(local):
-            poppler_kwargs['poppler_path'] = local
-        else:
-            for p in [
-                r'C:\Users\elvis.rodriguez\AppData\Local\Microsoft\WinGet\Packages\oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe\poppler-25.07.0\Library\bin',
-                r'C:\Program Files\poppler\bin', r'C:\poppler\bin',
-            ]:
-                if os.path.exists(p): poppler_kwargs['poppler_path'] = p; break
+    p = _get_poppler_path()
+    if p:
+        poppler_kwargs['poppler_path'] = p
     try:
         pages = pdf2image.convert_from_path(pdf_path, dpi=300, **poppler_kwargs)
     except Exception as e:
@@ -837,16 +868,9 @@ def _parse_proveedor_pdf_sps(path, progress_cb=None):
     if progress_cb: progress_cb('Convirtiendo PDF del proveedor a imágenes…')
 
     poppler_kw = {}
-    if os.name == 'nt':
-        local = os.path.join(os.path.dirname(__file__), 'poppler', 'bin')
-        if os.path.exists(local):
-            poppler_kw['poppler_path'] = local
-        else:
-            for p in [
-                r'C:\Users\elvis.rodriguez\AppData\Local\Microsoft\WinGet\Packages\oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe\poppler-25.07.0\Library\bin',
-                r'C:\Program Files\poppler\bin', r'C:\poppler\bin',
-            ]:
-                if os.path.isdir(p): poppler_kw['poppler_path'] = p; break
+    p = _get_poppler_path()
+    if p:
+        poppler_kw['poppler_path'] = p
 
     try:
         pages = pdf2image.convert_from_path(path, dpi=300, **poppler_kw)
