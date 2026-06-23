@@ -17,6 +17,9 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# Poppler binaries (demasiado pesados para git)
+poppler/
 *.egg-info/
 .eggs/
 eggs/
