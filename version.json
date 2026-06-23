@@ -1,5 +1,5 @@
 {
-  "version": "3.4",
+  "version": "3.5",
   "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/latest/download/VerificadorPreordenes.exe",
-  "notes": "✨ Novedades de la v3.4:\n- ⚡ Integración nativa en la barra de tareas de Windows.\n- 🔄 Corrección del proceso de minimización y restauración fluida.\n- 🏢 Tooltip simplificado en minúsculas: 'verificador de pre ordenes'.\n- 🚫 Soporte completo de pantalla completa (maximizar y restaurar nativo)."
+  "notes": "✨ Novedades de la v3.5:\n- 🔄 Auto-actualización funcional desde versiones anteriores.\n- ⚡ Integración nativa en la barra de tareas de Windows.\n- 🔍 Verificador SPS-465: detección de duplicados y faltantes.\n- 🏢 Actualización de unidades de adscripción.\n- 🐛 Correcciones de compatibilidad con Python 3.13."
 }

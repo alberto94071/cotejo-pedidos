@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.4'
+APP_VERSION  = '3.5'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
