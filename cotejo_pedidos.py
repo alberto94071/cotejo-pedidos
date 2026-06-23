@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.7'
+APP_VERSION  = '3.8'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -1433,6 +1433,9 @@ class App(tk.Tk):
         tk.Label(hdr,text='CONSULTORIO DEL INSTITUTO',font=('Consolas',16,'bold'),bg=SURFACE,fg=TEXTO).pack(side='left',padx=(18,0))
         tk.Label(hdr,text=' EN SAN MARCOS',           font=('Consolas',16,'bold'),bg=SURFACE,fg=VERDE).pack(side='left')
         tk.Label(hdr,text='  |  Cotejo Triple SIAF',  font=('Segoe UI',10),       bg=SURFACE,fg=MUTED).pack(side='left')
+        tk.Button(hdr, text='⬅  Menú Principal', font=('Segoe UI', 9),
+                  bg=SURFACE, fg=MUTED, relief='flat', cursor='hand2',
+                  command=self._volver_menu).pack(side='right', padx=12, pady=6)
 
         panel=tk.Frame(self,bg=FONDO,pady=10); panel.pack(fill='x',padx=20)
         self._file_row(panel,'📊  Reporte Excel:',     self.excel_path, self._pick_excel, 0)
@@ -1464,9 +1467,6 @@ class App(tk.Tk):
         self.btn_export=tk.Button(bf,text='📥  Exportar Reporte',font=('Consolas',10),
             bg=SURFACE,fg=TEXTO,relief='flat',padx=18,pady=7,cursor='hand2',
             command=self._exportar,state='disabled'); self.btn_export.pack(side='left',padx=6)
-        tk.Button(bf,text='⬅  Menú',font=('Consolas',9),
-            bg=SURFACE,fg=MUTED,relief='flat',padx=12,pady=7,cursor='hand2',
-            command=self._volver_menu).pack(side='left',padx=6)
 
         self.info_bar=tk.Frame(self,bg=SURFACE,pady=5); self.info_bar.pack(fill='x',padx=20)
         self.lbl_info=tk.Label(self.info_bar,text='',font=('Consolas',9),bg=SURFACE,fg=MUTED)
