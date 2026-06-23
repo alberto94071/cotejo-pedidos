@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.5'
+APP_VERSION  = '3.6'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -1508,8 +1508,13 @@ class App(tk.Tk):
 
         sb=tk.Frame(self,bg=SURFACE,pady=5); sb.pack(fill='x',side='bottom')
         tk.Label(sb,textvariable=self.status_var,font=('Consolas',9),bg=SURFACE,fg=VERDE).pack(side='left',padx=12)
-        tk.Label(sb,text=f'v{APP_VERSION} — {APP_AUTHOR}',font=('Consolas',8),bg=SURFACE,fg=MUTED).pack(side='right',padx=12)
         self.progress=ttk.Progressbar(sb,mode='indeterminate',length=160); self.progress.pack(side='right',padx=6)
+        lnk=tk.Label(sb,text=f'v{APP_VERSION}  ·  Desarrollado por CHRONOS-DEV  ↗',
+                     font=('Consolas',8),bg=SURFACE,fg=MUTED,cursor='hand2')
+        lnk.pack(side='right',padx=12)
+        lnk.bind('<Enter>', lambda e: lnk.config(fg=VERDE, font=('Consolas',8,'underline')))
+        lnk.bind('<Leave>', lambda e: lnk.config(fg=MUTED,  font=('Consolas',8)))
+        lnk.bind('<Button-1>', lambda e: webbrowser.open('https://www.chronos-dev.com'))
 
         s=ttk.Style(self); s.theme_use('clam')
         s.configure('Treeview',background=SURFACE,foreground=TEXTO,fieldbackground=SURFACE,rowheight=26,font=('Consolas',9))
@@ -2147,8 +2152,14 @@ class LauncherWindow(tk.Tk):
             self._make_card(grid_frame, tool, row, col)
 
         # Pie
-        tk.Label(self, text=f"v{APP_VERSION}  ·  {APP_AUTHOR}",
-                 font=('Segoe UI', 8), bg=FONDO, fg=MUTED).pack(side='bottom', pady=8)
+        pie = tk.Frame(self, bg=FONDO); pie.pack(side='bottom', pady=8)
+        tk.Label(pie, text=f"v{APP_VERSION}  ·  ", font=('Segoe UI', 8), bg=FONDO, fg=MUTED).pack(side='left')
+        lnk = tk.Label(pie, text="Desarrollado por CHRONOS-DEV  ↗", font=('Segoe UI', 8),
+                       bg=FONDO, fg=MUTED, cursor='hand2')
+        lnk.pack(side='left')
+        lnk.bind('<Enter>', lambda e: lnk.config(fg=VERDE, font=('Segoe UI', 8, 'underline')))
+        lnk.bind('<Leave>', lambda e: lnk.config(fg=MUTED,  font=('Segoe UI', 8)))
+        lnk.bind('<Button-1>', lambda e: webbrowser.open('https://www.chronos-dev.com'))
 
     def _make_card(self, parent, tool, row, col):
         ready = tool.get("ready", False)
