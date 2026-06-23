@@ -1,5 +1,5 @@
 {
-  "version": "3.6",
+  "version": "3.7",
   "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/latest/download/VerificadorPreordenes.exe",
-  "notes": "✨ Novedades de la v3.6:\n- ⬅ Botón para regresar al Menú de Herramientas.\n- 🔗 Footer profesional con enlace a CHRONOS-DEV.\n- 🔄 Auto-actualización desde versiones anteriores."
+  "notes": "✨ Novedades de la v3.7:\n- 🔔 Auto-actualización ahora funciona desde el Menú principal.\n- ⬅ Botón para regresar al Menú de Herramientas.\n- 🔗 Footer profesional con enlace a CHRONOS-DEV."
 }

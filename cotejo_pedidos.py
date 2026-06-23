@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.6'
+APP_VERSION  = '3.7'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -2108,6 +2108,44 @@ class LauncherWindow(tk.Tk):
         self.geometry(f"{win_w}x{win_h}+{(sw-win_w)//2}+{(sh-win_h)//2}")
 
         self._build_ui()
+        threading.Thread(target=self._check_updates_bg, daemon=True).start()
+
+    def _check_updates_bg(self):
+        latest, dl_url, notes = check_for_updates()
+        if latest:
+            self.after(0, self._mostrar_update_toast, latest, dl_url, notes)
+
+    def _mostrar_update_toast(self, latest, dl_url, notes):
+        toast = tk.Toplevel(self)
+        toast.overrideredirect(True)
+        toast.attributes('-topmost', True)
+        toast.attributes('-alpha', 0.96)
+        toast.configure(bg='#1a251a')
+        frame = tk.Frame(toast, bg='#1a251a', highlightbackground='#7aff00',
+                         highlightthickness=2, padx=20, pady=12)
+        frame.pack()
+        tk.Label(frame, text='🔄', font=('Segoe UI', 18), bg='#1a251a', fg='#7aff00'
+                 ).grid(row=0, column=0, rowspan=2, padx=(0, 14))
+        tk.Label(frame, text=f'Nueva versión disponible: v{latest}',
+                 font=('Consolas', 11, 'bold'), bg='#1a251a', fg='#f0f0e8'
+                 ).grid(row=0, column=1, columnspan=2, sticky='w')
+        if notes:
+            tk.Label(frame, text=notes, font=('Consolas', 9), bg='#1a251a', fg='#888a80',
+                     wraplength=280).grid(row=1, column=1, columnspan=2, sticky='w')
+        btn_frame = tk.Frame(frame, bg='#1a251a')
+        btn_frame.grid(row=2, column=1, columnspan=2, pady=(10, 0), sticky='e')
+        tk.Button(btn_frame, text='⬇  Descargar', font=('Consolas', 9, 'bold'),
+                  bg='#7aff00', fg='#131a13', relief='flat', padx=14, pady=4,
+                  cursor='hand2', command=lambda: (webbrowser.open(dl_url), toast.destroy())
+                  ).pack(side='left', padx=(0, 8))
+        tk.Button(btn_frame, text='Ahora no', font=('Consolas', 9),
+                  bg='#2a3a2a', fg='#f0f0e8', relief='flat', padx=10, pady=4,
+                  cursor='hand2', command=toast.destroy).pack(side='left')
+        toast.update_idletasks()
+        px, py = self.winfo_rootx(), self.winfo_rooty()
+        ph = self.winfo_height()
+        tw, th = toast.winfo_reqwidth(), toast.winfo_reqheight()
+        toast.geometry(f"+{px}+{py + ph - th - 10}")
 
     # ── UI ───────────────────────────────────────────────────
     def _build_ui(self):
