@@ -148,6 +148,8 @@ def _get_poppler_path():
 
 def parse_pdf(pdf_path, progress_cb=None):
     _load_ocr_libs()
+    import os
+    os.environ["PATH"] += os.pathsep + r'C:\Users\elvis.rodriguez\AppData\Local\Programs\Tesseract-OCR'
     poppler_kwargs = {}
     p = _get_poppler_path()
     if p:
@@ -167,6 +169,13 @@ def parse_pdf(pdf_path, progress_cb=None):
 
     for idx, page in enumerate(pages, 1):
         if progress_cb: progress_cb(f"Leyendo PDF — página {idx}/{total}…")
+        try:
+            osd = pytesseract.image_to_osd(page)
+            rot = re.search(r'Rotate: (\d+)', osd)
+            if rot and int(rot.group(1)) != 0:
+                page = page.rotate(-int(rot.group(1)), expand=True)
+        except Exception:
+            pass
         try:
             text = pytesseract.image_to_string(page, lang='spa', config='--psm 6')
         except Exception as e:
@@ -765,11 +774,11 @@ def _parse_igss_sps_reporte(path, progress_cb=None):
                            low_memory=False, dtype=str)
 
     df = None
-    for hdr in [3, 2, 1, 0]:
+    for hdr in range(15, -1, -1):
         try:
             tmp = _try_read(hdr)
-            cols_upper = [str(c).upper() for c in tmp.columns]
-            if any('NUMERO_SPS' in c or 'SPS465' in c.replace('_','').replace(' ','')
+            cols_upper = [str(c).upper().replace('\n', '').replace('\r', '') for c in tmp.columns]
+            if any('NUMERO_SPS' in c.replace('-','') or 'SPS465' in c.replace('_','').replace(' ','').replace('-','')
                    for c in cols_upper):
                 df = tmp
                 break
@@ -780,8 +789,8 @@ def _parse_igss_sps_reporte(path, progress_cb=None):
         raise ValueError('No se encontró la columna NUMERO_SPS465 en el reporte IGSS.')
 
     col_sps = next(c for c in df.columns
-                   if 'NUMERO_SPS' in str(c).upper()
-                   or 'SPS465' in str(c).upper().replace('_','').replace(' ',''))
+                   if 'NUMERO_SPS' in str(c).upper().replace('\n', '').replace('\r', '').replace('-','')
+                   or 'SPS465' in str(c).upper().replace('\n', '').replace('\r', '').replace('_','').replace(' ','').replace('-',''))
 
     def _v(row, key):
         if key not in df.columns: return ''
@@ -858,13 +867,21 @@ def _parse_proveedor_excel_sps(path, progress_cb=None):
             if rows: return rows
         except Exception:
             continue
-
     raise ValueError('No se pudo leer la estadística del proveedor desde el Excel.')
 
 
 def _parse_proveedor_pdf_sps(path, progress_cb=None):
     """OCR de estadística PDF del proveedor. Retorna lista de dicts."""
     _load_ocr_libs()
+    import os
+    os.environ["PATH"] += os.pathsep + r'C:\Users\elvis.rodriguez\AppData\Local\Programs\Tesseract-OCR'
+    try:
+        from img2table.document import Image as Img2TableImage
+        from img2table.ocr import TesseractOCR
+        HAS_IMG2TABLE = True
+    except ImportError:
+        HAS_IMG2TABLE = False
+
     if progress_cb: progress_cb('Convirtiendo PDF del proveedor a imágenes…')
 
     poppler_kw = {}
@@ -877,30 +894,80 @@ def _parse_proveedor_pdf_sps(path, progress_cb=None):
     except Exception as e:
         raise RuntimeError(f'Error al convertir PDF del proveedor: {e}')
 
-    rows, seen = [], set()
-    for i, img in enumerate(pages):
-        if progress_cb: progress_cb(f'OCR página {i+1}/{len(pages)}…')
-        text = pytesseract.image_to_string(img, lang='spa', config='--psm 6')
+    def _extract_from_text(text, rows_list, seen_set):
+        import re
         for line in text.splitlines():
             line = line.strip()
             if not line: continue
-            m = re.match(r'^(\d{3,6})\s+(.*)', line)
+            
+            m = re.search(r'^.*?(\d{3,6})(?:\b|\D)\s*(?:[|/ilI.,_\"\'\\-]*\s*)*(.*)', line)
             if not m: continue
             num, resto = m.group(1), m.group(2).strip()
-            if num in seen: continue
-            if any(s in resto.upper() for s in ['TOTAL','SUMA','GRAND','MONTO']): continue
-            seen.add(num)
-
+            if len(num) < 3: continue
+            if num in seen_set: continue
+            if any(s in resto.upper() for s in ['TOTAL','SUMA','GRAND','MONTO','CALLE','AVENIDA','ZONA']): continue
+            
             nombre = estudio = fecha = ''
-            nm = re.match(r'^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ\s,\.]+?)\s{2,}(\d{6,13})\s+(.*)', resto)
+            nm = re.match(r'^([A-ZÁÉÍÓÚÑa-záéíóúñ\s,\.]+?)(?:\s+(\d{6,13}))?\s+(.*)', resto)
+            if not nm:
+                nm = re.match(r'^([A-ZÁÉÍÓÚÑa-záéíóúñ\s,\.]+?)\s+(.*)', resto)
+                
             if nm:
                 nombre = nm.group(1).strip()
-                dm = re.search(r'(\d{1,2}[-/]\w{3}[-/]\d{2,4})', nm.group(3))
-                if dm:
-                    fecha = dm.group(1)
-                    estudio = nm.group(3)[:dm.start()].strip()
-            rows.append({'num_sps': num, 'nombre': nombre,
-                         'estudio': estudio, 'fecha': fecha})
+                rest_of_line = nm.group(3) if len(nm.groups()) == 3 and nm.group(3) else nm.group(2)
+                if rest_of_line:
+                    dm = re.search(r'(\d{1,2}[-/]\w{3}[-/]\d{2,4})', rest_of_line)
+                    if dm:
+                        fecha = dm.group(1)
+                        estudio = rest_of_line[:dm.start()].strip()
+                    else:
+                        estudio = rest_of_line.strip()
+            else:
+                nombre = resto
+                
+            seen_set.add(num)
+            rows_list.append({'num_sps': num, 'nombre': nombre, 'estudio': estudio, 'fecha': fecha})
+
+    rows, seen = [], set()
+    global_rot = None
+    for i, img in enumerate(pages):
+        if progress_cb: progress_cb(f'OCR página {i+1}/{len(pages)}…')
+        try:
+            osd = pytesseract.image_to_osd(img)
+            rot = re.search(r'Rotate: (\d+)', osd)
+            if rot and int(rot.group(1)) != 0:
+                global_rot = int(rot.group(1))
+        except Exception:
+            pass
+
+        if global_rot:
+            img = img.rotate(-global_rot, expand=True)
+
+        text_raw = pytesseract.image_to_string(img, lang='spa', config='--psm 6')
+        _extract_from_text(text_raw, rows, seen)
+
+        if HAS_IMG2TABLE:
+            try:
+                import tempfile, os
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                    img.save(tmp.name, 'JPEG')
+                    tmp_path = tmp.name
+                
+                doc = Img2TableImage(tmp_path)
+                tess_ocr = TesseractOCR(n_threads=1, lang="spa")
+                extracted_tables = doc.extract_tables(ocr=tess_ocr, implicit_rows=True, borderless_tables=True, min_confidence=50)
+                if extracted_tables:
+                    for table in extracted_tables:
+                        lines_img2table = []
+                        for idx, row in table.df.iterrows():
+                            cols = [str(col).strip().replace('\n', ' ') for col in row if str(col).strip() not in ('nan', 'None', '')]
+                            if cols:
+                                lines_img2table.append(' '.join(cols))
+                        _extract_from_text('\n'.join(lines_img2table), rows, seen)
+                os.remove(tmp_path)
+            except Exception as e:
+                print(f"Error img2table: {e}")
+
     return rows
 
 
