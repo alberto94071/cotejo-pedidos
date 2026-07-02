@@ -1,5 +1,5 @@
 {
-  "version": "3.8",
+  "version": "3.9",
   "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/latest/download/VerificadorPreordenes.exe",
-  "notes": "✨ Novedades de la v3.8:\n- ⬅ Botón 'Menú Principal' ahora visible en la barra superior del Cotejo de Pre-Órdenes.\n- 🔔 Auto-actualización desde el menú principal."
+  "notes": "✨ Novedades de la v3.9:\n- 🔍 Corrección: PPR diferente entre Excel y Pre-Orden ahora se detecta como error.\n- ⚠️ Nuevo aviso naranja: 'Código PPR no encontrado en Pre-Orden — verificar código en SIGES'."
 }

@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.8'
+APP_VERSION  = '3.9'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -388,6 +388,10 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
                         sub_incorrectos.append({'codigo': fila['codigo'], 'ppr': ppr_code,
                                                 'sub_pedido': fila['subproducto'],
                                                 'sub_consol': sub_en_consol, 'cant_pdf': cant_pdf})
+                else:
+                    # PPR del Excel no existe en ninguna parte de la pre-orden
+                    # Posible código PPR incorrecto ingresado en SIGES
+                    estado = 'PPR_NO_EN_CONSOL'
             else:
                 # Verificar si la cantidad consol tiene subproducto prohibido
                 if fila['subproducto'] in SUBPRODUCTOS_PROHIBIDOS and estado != 'SUB_PROHIBIDO':
@@ -458,6 +462,7 @@ ESTADO_LABELS = {
     'SOBRANTE_EXCEL':           '⚠️ Sobrante en Excel (no está en PDF)',
     'SUB_INCORRECTO':           '❌ SubProducto incorrecto en Pre orden',
     'SUB_PROHIBIDO':            '🚫 SUBPRODUCTO NO PERMITIDO para este tipo de compra',
+    'PPR_NO_EN_CONSOL':         '⚠️ Código PPR no encontrado en Pre-Orden — verificar código en SIGES',
 }
 
 def exportar_reporte(resultados, unidad_id, correlativo,
@@ -1505,6 +1510,7 @@ class App(tk.Tk):
         self.tree.tag_configure('consol_mayor', background='#3a2a00', foreground='#ffd700')
         self.tree.tag_configure('consol_menor', background='#3a1a1a', foreground='#ff6666')
         self.tree.tag_configure('prohibido',    background='#5a0000', foreground='#ff0000')
+        self.tree.tag_configure('ppr_no_consol',background='#3a2000', foreground='#ff9900')
 
         sb=tk.Frame(self,bg=SURFACE,pady=5); sb.pack(fill='x',side='bottom')
         tk.Label(sb,textvariable=self.status_var,font=('Consolas',9),bg=SURFACE,fg=VERDE).pack(side='left',padx=12)
@@ -1652,6 +1658,7 @@ class App(tk.Tk):
             'FALTANTE_EXCEL':'error', 'SOBRANTE_EXCEL':'warning',
             'SUB_INCORRECTO':'sub_incorr', 'SUB_PROHIBIDO':'prohibido',
             'DIFERENCIA_CONSOL_MAYOR':'consol_mayor', 'DIFERENCIA_CONSOL_MENOR':'consol_menor',
+            'PPR_NO_EN_CONSOL':'ppr_no_consol',
         }
         for r in resultados:
             label=ESTADO_LABELS.get(r['estado'],r['estado'])
