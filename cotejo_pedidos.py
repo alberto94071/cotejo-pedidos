@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '4.0'
+APP_VERSION  = '4.1'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -195,7 +195,7 @@ def parse_pdf(pdf_path, progress_cb=None):
                 try: rows.append({'codigo': m.group(1), 'subproducto': m.group(2),
                                    'cantidad': float(m.group(3).replace(',','.'))})
                 except: pass
-    return {'correlativo': correlativo, 'unidad_id': unidad_id, 'rows': rows}
+    return {'correlativo': correlativo, 'unidad_id': unidad_id, 'rows': rows, 'is_real_pdf': True}
 
 
 def parse_consolidacion(xls_path):
@@ -269,7 +269,8 @@ def generar_pdf_data_desde_excel(excel_path, uid, corr_num, corr_year):
     return {
         'correlativo': f"{corr_num}/{corr_year}",
         'unidad_id': uid,
-        'rows': rows
+        'rows': rows,
+        'is_real_pdf': False
     }
 
 
@@ -349,10 +350,26 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
         for r in consol_data['rows']:
             consol_restantes[r['cod_insumo']].append(r['subproducto'])
 
+    # PASADA 1: Encontrar coincidencias exactas para no quemar un subproducto incorrecto
+    exact_matches = set()
+    if consol_data:
+        for i, fila in enumerate(pdf_data['rows']):
+            if fila['subproducto'] in SUBPRODUCTOS_PROHIBIDOS:
+                continue
+            key_excel = (fila['codigo'], fila['subproducto'])
+            excel_entry = excel_idx.get(key_excel)
+            ppr_code = excel_entry['ppr'] if excel_entry else None
+            
+            if ppr_code and ppr_code not in ('None',''):
+                subs_disponibles = consol_restantes.get(ppr_code, [])
+                if fila['subproducto'] in subs_disponibles:
+                    exact_matches.add(i)
+                    subs_disponibles.remove(fila['subproducto'])
+
     resultados = []; claves_excel_vistas = set()
     sub_incorrectos = []; sub_prohibidos = []
 
-    for fila in pdf_data['rows']:
+    for i, fila in enumerate(pdf_data['rows']):
         key_excel = (fila['codigo'], fila['subproducto'])
         cant_pdf  = fila['cantidad']; claves_excel_vistas.add(key_excel)
         excel_entry = excel_idx.get(key_excel)
@@ -372,16 +389,12 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
             })
 
         if estado is None and consol_data and ppr_code and ppr_code not in ('None',''):
-            # Verificar si coincide exactamente con una entrada disponible en consolidación
-            subs_disponibles = consol_restantes.get(ppr_code, [])
-            if fila['subproducto'] in subs_disponibles:
+            if i in exact_matches:
                 cant_consol = idx_ppr.get((ppr_code, fila['subproducto']))
-                # Consumir esta coincidencia para que registros subsecuentes no reutilicen el mismo
-                subs_disponibles.remove(fila['subproducto'])
             else:
                 subs_totales = ppr_subs.get(ppr_code, [])
+                subs_disponibles = consol_restantes.get(ppr_code, [])
                 if subs_totales:
-                    # Si ya no coincide con los disponibles o no está en la lista de ese PPR
                     if subs_disponibles:
                         sub_en_consol = ', '.join(subs_disponibles)
                         estado = 'SUB_INCORRECTO'
@@ -467,12 +480,12 @@ ESTADO_LABELS = {
 }
 
 def exportar_reporte(resultados, unidad_id, correlativo,
-                     consol_data=None, sub_incorrectos=None, sub_prohibidos=None, outpath=None):
+                     consol_data=None, sub_incorrectos=None, sub_prohibidos=None, outpath=None, is_real_pdf=True):
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
     rows_exp = [{'Código Interno': r['codigo'], 'Código PPR': r['ppr'],
-                 'Subproducto en SIAF': r['subproducto'], 'Cantidad SIGES': r['cant_pdf'],
-                 'Cantidad Excel': r['cant_excel'], 'Cantidad Pre Orden': r['cant_consol'],
+                 'Subproducto en SIAF': r['subproducto'], 'Cantidad PDF': r['cant_pdf'] if is_real_pdf else '',
+                 'Cantidad Reporte': r['cant_excel'], 'Cantidad SIGES': r['cant_consol'],
                  'Estado': ESTADO_LABELS.get(r['estado'], r['estado'])} for r in resultados]
 
     df_out  = pd.DataFrame(rows_exp)
@@ -1482,7 +1495,7 @@ class App(tk.Tk):
         self.tf_container = tf = tk.Frame(self,bg=FONDO)
         tf.pack(fill='both',expand=True,padx=20,pady=(6,0))
 
-        cols   = ('Cód. Interno','PPR','Subproducto','Cant. PDF','Cant. Excel','Cant. Pre Orden','Estado')
+        cols   = ('Cód. Interno','PPR','Subproducto','Cant. PDF','Cant. Reporte','Cant. SIGES','Estado')
         # ── Anchos fijos + stretch=True en Estado para ocupar todo el recuadro sin cortar texto ──
         widths = [100, 80, 130, 88, 100, 120, 480]
         self.tree=ttk.Treeview(tf,columns=cols,show='headings',height=22)
@@ -1632,15 +1645,16 @@ class App(tk.Tk):
             self._set_status('Cotejando los 3 documentos…')
             resultados,uid,corr,ppr_warning,sub_incorrectos,sub_prohibidos=cotejar_triple(
                 self.excel_path.get(),pdf_data,consol_data)
+            self._is_real_pdf = pdf_data.get('is_real_pdf', True)
             self.resultados=resultados; self._uid=uid; self._corr=corr
             self._sub_incorrectos=sub_incorrectos; self._sub_prohibidos=sub_prohibidos
             self.after(0,self._mostrar_resultados,resultados,uid,corr,consol_data,
-                       ppr_warning,sub_incorrectos,sub_prohibidos)
+                       ppr_warning,sub_incorrectos,sub_prohibidos, self._is_real_pdf)
         except Exception as e:
             self.after(0,self._mostrar_error,str(e))
 
     def _mostrar_resultados(self,resultados,uid,corr,consol_data,
-                             ppr_warning,sub_incorrectos,sub_prohibidos):
+                             ppr_warning,sub_incorrectos,sub_prohibidos,is_real_pdf=True):
         if hasattr(self,'_logo_lbl'): self._logo_lbl.place_forget()
         self._show_logo = False
         self.progress.stop()
@@ -1667,7 +1681,7 @@ class App(tk.Tk):
                 label+=f"  (Pre orden tiene: {r['sub_en_consol']})"
             self.tree.insert('','end',values=(
                 r['codigo'],r['ppr'],r['subproducto'],
-                r['cant_pdf']    if r['cant_pdf']    is not None else '—',
+                (r['cant_pdf'] if is_real_pdf else '') if r['cant_pdf'] is not None else '—',
                 r['cant_excel']  if r['cant_excel']  is not None else '—',
                 r['cant_consol'] if r['cant_consol'] is not None else '—',
                 label,
@@ -1728,7 +1742,8 @@ class App(tk.Tk):
                 return
                 
             exportar_reporte(self.resultados, self._uid, self._corr,
-                             self.consol_data, self._sub_incorrectos, self._sub_prohibidos, outpath=path)
+                             self.consol_data, self._sub_incorrectos, self._sub_prohibidos, outpath=path,
+                             is_real_pdf=getattr(self, '_is_real_pdf', True))
             messagebox.showinfo('Reporte guardado', f'Guardado con éxito en:\n{path}')
         except Exception as e:
             messagebox.showerror('Error al exportar', str(e))

@@ -1,5 +1,5 @@
 {
-  "version": "4.0",
+  "version": "4.1",
   "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/latest/download/VerificadorPreordenes.exe",
-  "notes": "✨ Novedades de la v4.0:\n- 📝 Encabezados corregidos: 'Consolidación' y 'Pre-Orden'.\n- 🏷️ Cambio de etiquetas 'Pedido' por 'SIAF' en todo el reporte.\n- 🔍 Ajuste de lógica: asignación exacta de SubProductos por ocurrencia para prevenir falsos positivos."
+  "notes": "✨ Novedades de la v4.1:\n- 📝 Cambio de encabezados: Cantidad Excel -> Reporte, Cantidad Pre Orden -> SIGES, Cantidad SIGES -> PDF.\n- 🔍 Ajuste de lógica triple: validación exacta de subproductos en la primera pasada.\n- 👁️ La cantidad PDF se deja vacía si no se carga archivo."
 }
