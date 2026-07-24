@@ -32,7 +32,7 @@ if os.name == 'nt':
         pass
 
 # ── Metadatos de la aplicación ─────────────────────────────
-APP_VERSION  = '3.9'
+APP_VERSION  = '4.0'
 APP_AUTHOR   = 'CHRONOS-DEV'
 APP_CONTACT  = 'www.chronos-dev.com'
 APP_TITLE    = 'Verificador de Pre-Órdenes — CONSULTORIO DEL INSTITUTO EN SAN MARCOS'
@@ -343,6 +343,12 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
                 sum_pdf_by_ppr_sub[(ppr_code, fila['subproducto'])] += fila['cantidad']
                 vistos_para_suma.add(sum_key)
 
+    # Copia o tracking para consumir las combinaciones (ppr_code, subproducto) de consolidación
+    consol_restantes = defaultdict(list)
+    if consol_data:
+        for r in consol_data['rows']:
+            consol_restantes[r['cod_insumo']].append(r['subproducto'])
+
     resultados = []; claves_excel_vistas = set()
     sub_incorrectos = []; sub_prohibidos = []
 
@@ -358,7 +364,7 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
         if fila['subproducto'] in SUBPRODUCTOS_PROHIBIDOS:
             estado = 'SUB_PROHIBIDO'
             sub_prohibidos.append({
-                'origen':      'PDF / Pedido',
+                'origen':      'SIAF',
                 'codigo':      fila['codigo'],
                 'ppr':         ppr_code or '—',
                 'subproducto': fila['subproducto'],
@@ -366,37 +372,32 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
             })
 
         if estado is None and consol_data and ppr_code and ppr_code not in ('None',''):
-            cant_consol = idx_ppr.get((ppr_code, fila['subproducto']))
-            if cant_consol is None:
-                subs = ppr_subs.get(ppr_code, [])
-                if subs:
-                    sub_en_consol = ', '.join(subs)
-                    # Verificar si alguno de los subproductos en Consolidación está prohibido
-                    proh_en_consol = [s for s in subs if s in SUBPRODUCTOS_PROHIBIDOS]
-                    if proh_en_consol:
-                        estado = 'SUB_PROHIBIDO'
-                        for sp_proh in proh_en_consol:
-                            sub_prohibidos.append({
-                                'origen':      'Pre orden',
-                                'codigo':      fila['codigo'],
-                                'ppr':         ppr_code or '—',
-                                'subproducto': sp_proh,
-                                'cant_pdf':    cant_pdf,
-                            })
+            # Verificar si coincide exactamente con una entrada disponible en consolidación
+            subs_disponibles = consol_restantes.get(ppr_code, [])
+            if fila['subproducto'] in subs_disponibles:
+                cant_consol = idx_ppr.get((ppr_code, fila['subproducto']))
+                # Consumir esta coincidencia para que registros subsecuentes no reutilicen el mismo
+                subs_disponibles.remove(fila['subproducto'])
+            else:
+                subs_totales = ppr_subs.get(ppr_code, [])
+                if subs_totales:
+                    # Si ya no coincide con los disponibles o no está en la lista de ese PPR
+                    if subs_disponibles:
+                        sub_en_consol = ', '.join(subs_disponibles)
+                        estado = 'SUB_INCORRECTO'
+                        sub_incorrectos.append({'codigo': fila['codigo'], 'ppr': ppr_code,
+                                                'sub_pedido': fila['subproducto'],
+                                                'sub_consol': sub_en_consol, 'cant_pdf': cant_pdf})
                     else:
+                        sub_en_consol = ', '.join(subs_totales)
                         estado = 'SUB_INCORRECTO'
                         sub_incorrectos.append({'codigo': fila['codigo'], 'ppr': ppr_code,
                                                 'sub_pedido': fila['subproducto'],
                                                 'sub_consol': sub_en_consol, 'cant_pdf': cant_pdf})
                 else:
                     # PPR del Excel no existe en ninguna parte de la pre-orden
-                    # Posible código PPR incorrecto ingresado en SIGES
                     estado = 'PPR_NO_EN_CONSOL'
-            else:
-                # Verificar si la cantidad consol tiene subproducto prohibido
-                if fila['subproducto'] in SUBPRODUCTOS_PROHIBIDOS and estado != 'SUB_PROHIBIDO':
-                    estado = 'SUB_PROHIBIDO'
-
+        
         if estado is None:
             # Si hay un PPR válido, comparamos con la suma de las cantidades del PDF que comparten mismo PPR y subproducto
             has_ppr = ppr_code and ppr_code not in ('None', '')
@@ -455,11 +456,11 @@ def cotejar_triple(excel_path, pdf_data, consol_data):
 ESTADO_LABELS = {
     'OK':                       '✅ Correcto',
     'DIFERENCIA_EXCEL':         '❌ Diferencia vs Excel',
-    'DIFERENCIA_CONSOL_MAYOR':  '⚠️ Pre orden MAYOR que pedido',
-    'DIFERENCIA_CONSOL_MENOR':  '❌ Pre orden MENOR que pedido',
+    'DIFERENCIA_CONSOL_MAYOR':  '⚠️ Pre orden MAYOR que SIAF',
+    'DIFERENCIA_CONSOL_MENOR':  '❌ Pre orden MENOR que SIAF',
     'DIFERENCIA_AMBOS':         '❌ Diferencia en ambos',
     'FALTANTE_EXCEL':           '❌ No encontrado en Excel',
-    'SOBRANTE_EXCEL':           '⚠️ Sobrante en Excel (no está en PDF)',
+    'SOBRANTE_EXCEL':           '⚠️ Sobrante en Excel (no está en SIGES)',
     'SUB_INCORRECTO':           '❌ SubProducto incorrecto en Pre orden',
     'SUB_PROHIBIDO':            '🚫 SUBPRODUCTO NO PERMITIDO para este tipo de compra',
     'PPR_NO_EN_CONSOL':         '⚠️ Código PPR no encontrado en Pre-Orden — verificar código en SIGES',
@@ -470,7 +471,7 @@ def exportar_reporte(resultados, unidad_id, correlativo,
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
     rows_exp = [{'Código Interno': r['codigo'], 'Código PPR': r['ppr'],
-                 'Subproducto': r['subproducto'], 'Cantidad PDF': r['cant_pdf'],
+                 'Subproducto en SIAF': r['subproducto'], 'Cantidad SIGES': r['cant_pdf'],
                  'Cantidad Excel': r['cant_excel'], 'Cantidad Pre Orden': r['cant_consol'],
                  'Estado': ESTADO_LABELS.get(r['estado'], r['estado'])} for r in resultados]
 
@@ -493,8 +494,8 @@ def exportar_reporte(resultados, unidad_id, correlativo,
 
         ws['A1'] = 'REPORTE DE VERIFICACIÓN DE PRE-ÓRDENES'; ws['A1'].font = Font(bold=True, size=14)
         ws['A2'] = f'Unidad ID: {unidad_id}'
-        ws['A3'] = f'Correlativo pedido: {correlativo}'
-        if consol_data: ws['A4'] = f'Pre orden: {consol_data["num"]}   |   Pre-Orden: {consol_data["preorden"]}'
+        ws['A3'] = f'Correlativo SIAF: {correlativo}'
+        if consol_data: ws['A4'] = f'Consolidación: {consol_data["num"]}   |   Pre-Orden: {consol_data["preorden"]}'
         ws['A5'] = f'Generado: {datetime.now().strftime("%d/%m/%Y %H:%M")}   |   v{APP_VERSION}'
 
         for cell in ws[6]:
@@ -522,7 +523,7 @@ def exportar_reporte(resultados, unidad_id, correlativo,
         total=len(resultados); ok_c=sum(1 for r in resultados if r['estado']=='OK'); err=total-ok_c
         last=ws.max_row+2
         ws.cell(last,1,'RESUMEN GENERAL').font=Font(bold=True,size=12)
-        ws.cell(last+1,1,'Total líneas PDF:'); ws.cell(last+1,2,total)
+        ws.cell(last+1,1,'Total líneas SIGES:'); ws.cell(last+1,2,total)
         ws.cell(last+2,1,'Correctas (✅):').font=Font(color='375623',bold=True); ws.cell(last+2,2,ok_c)
         ws.cell(last+3,1,'Con errores:').font=Font(color='9C0006',bold=True); ws.cell(last+3,2,err)
 
@@ -562,12 +563,12 @@ def exportar_reporte(resultados, unidad_id, correlativo,
             t.font=Font(bold=True,size=12,color='9C0006'); t.fill=PatternFill('solid',fgColor='FFD700')
             ws.merge_cells(start_row=sec,start_column=1,end_row=sec,end_column=6)
             t.alignment=Alignment(horizontal='center')
-            n=ws.cell(sec+1,1,'Los siguientes códigos tienen SubProducto diferente en la Pre orden respecto al Pedido. Deben ser corregidos por el Centro de Costo.')
+            n=ws.cell(sec+1,1,'Los siguientes códigos tienen SubProducto diferente en la Pre orden respecto al SIAF. Deben ser corregidos por el Centro de Costo.')
             n.font=Font(italic=True,size=10,color='9C0006')
             ws.merge_cells(start_row=sec+1,start_column=1,end_row=sec+1,end_column=6)
             n.alignment=Alignment(wrap_text=True); ws.row_dimensions[sec+1].height=30
             enc_r=sec+2
-            for ci,enc in enumerate(['Código Interno','Código PPR','SubProducto en Pedido','SubProducto en Pre orden','Cantidad','Acción requerida'],1):
+            for ci,enc in enumerate(['Código Interno','Código PPR','SubProducto en SIAF','SubProducto en Pre orden','Cantidad','Acción requerida'],1):
                 c=ws.cell(enc_r,ci,enc); c.fill=PatternFill('solid',fgColor='9C0006')
                 c.font=Font(bold=True,color='FFFFFF'); c.alignment=Alignment(horizontal='center'); c.border=border
             for i,si in enumerate(sub_incorrectos,1):

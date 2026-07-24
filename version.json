@@ -1,5 +1,5 @@
 {
-  "version": "3.9",
+  "version": "4.0",
   "download_url": "https://github.com/alberto94071/cotejo-pedidos/releases/latest/download/VerificadorPreordenes.exe",
-  "notes": "✨ Novedades de la v3.9:\n- 🔍 Corrección: PPR diferente entre Excel y Pre-Orden ahora se detecta como error.\n- ⚠️ Nuevo aviso naranja: 'Código PPR no encontrado en Pre-Orden — verificar código en SIGES'."
+  "notes": "✨ Novedades de la v4.0:\n- 📝 Encabezados corregidos: 'Consolidación' y 'Pre-Orden'.\n- 🏷️ Cambio de etiquetas 'Pedido' por 'SIAF' en todo el reporte.\n- 🔍 Ajuste de lógica: asignación exacta de SubProductos por ocurrencia para prevenir falsos positivos."
 }
